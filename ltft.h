@@ -8,7 +8,7 @@
 	(at your option) any later version.
 
 	This program is distributed in the hope that it will be useful,
-	but without ANY WARRANTY; without even the implied warranty of
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
 	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 	GNU General Public License for more details.
 
@@ -32,6 +32,14 @@
 		//	Control of LTFT "learning" 
 		//	uses d ECU data structure
 		void ltft_control(void);
+
+		// ====================================================
+		void kosh_ltft_control(void);
+		void kosh_write_value(uint8_t y, uint8_t x, uint8_t n);
+		void kosh_find_cells(void);
+		void kosh_points_weight(void);
+		void kosh_add_ve_calculate(void);
+		// ====================================================
 
 		// Get LTFT status
 		// return 0 - not active, 1 - active (used)
