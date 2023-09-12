@@ -49,7 +49,6 @@
 #define secu3_offsetof(type,member)   ((size_t)(&((type *)0)->member))
 #define _GWU12(x,i,j) (d.mm_ptr12(secu3_offsetof(struct f_data_t, x), (i*16+j) )) //note: hard coded size of array
 
-
 // Структура для хранения переменных
 typedef struct {
 	int16_t RPMGrid[16];			// Сетка оборотов x1
@@ -67,6 +66,8 @@ typedef struct {
 	int16_t VEAlignment[4];			// Добавка для выравнивания ячеек x2048
 	int16_t AddVE[4];				// Добавка к VE по коррекции x2048
 	int16_t LTFTAdd[4];				// Добавочный коэффициент LTFT x512
+	int8_t CorrDelay;				// Пауза коррекции топлива в тактах
+											// после отключения подачи толплива (ЭПХХ, отсечка)
 } Kosh_t;
 
 // Инициализация структуры
@@ -84,7 +85,8 @@ Kosh_t Kosh = {.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 
 				.CellsProp = {0, 0, 0, 0},
 				.VEAlignment = {0.0, 0.0, 0.0, 0.0},
 				.AddVE = {0.0, 0.0, 0.0, 0.0},
-				.LTFTAdd = {0, 0, 0, 0}
+				.LTFTAdd = {0, 0, 0, 0},
+				.CorrDelay = 0
 			};
 
 // Порядок нумерации ячеек в массивах
@@ -93,6 +95,9 @@ Kosh_t Kosh = {.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 
 
 // Расчет коррекции 
 void kosh_ltft_control(void) {
+	// Пауза коррекции топлива активна, уходим погулять
+	if (Kosh.CorrDelay) {return;}
+
 	#ifdef DEBUG_MODE
 		d.sens.frequen = 1385;
 		d.sens.map = 2200;
@@ -173,6 +178,10 @@ void kosh_ltft_control(void) {
 	kosh_write_value(Kosh.y2, Kosh.x1, 1);
 	kosh_write_value(Kosh.y2, Kosh.x2, 2);
 	kosh_write_value(Kosh.y1, Kosh.x2, 3);
+
+	// Обнуление лямбда коррекции
+	d.corr.lambda[0] = 0;
+	d.corr.lambda[1] = 0;
 
 	// Вывод для отладки
 	#ifdef DEBUG_MODE
@@ -352,8 +361,6 @@ void kosh_add_ve_calculate(void) {
 // =============================================================================
 // =============================================================================
 
-
-
 /**Describes data for each LTFT channel*/
 typedef struct {
 	uint8_t ltft_state;  //!< SM state
@@ -467,11 +474,8 @@ void ltft_control(void) {
 					// Переход к моей функции
 					kosh_ltft_control();
 
-					// Обнуление лямбда коррекции
-					d.corr.lambda[i] = 0;
 					// Сброс состояния
 					ltft[i].ltft_state = 0;
-
 				}
 				else {
 					break;
@@ -529,6 +533,35 @@ uint8_t ltft_is_active(void) {
 void ltft_stroke_event_notification(void) {
 	++ltft[0].strokes;
 	++ltft[1].strokes;
+
+	// Во время отключения подачи топлива (ЭПХХ, отсечка) коррекция не работает,
+	// но после сразу начинает работать, при этом лямбда еще показывает 0 и коррекция улетает вверх.
+	// А потом уже коррекция улетает вниз и вся эта чушь записывается в LTFT.
+
+	// После возобновления подачи топлива необходим запрет на любую коррекцию на некоторое время,
+	// которое больше максимально задержки лямбды, например, 50 тактов.
+	// Это значение в тактах было бы неплохо внести в константы прошивки.
+
+	// Отключение подачи топлива буду отслеживать по длительности впрыска.
+	// Не разобрался я в флагах состояний, да и так проще будет.
+
+	// Если нет подачи топлива, каждый такт добавляем 1 такт к задержке коррекции.
+	if (!d.inj_pw) {
+		if (Kosh.CorrDelay < 50) {
+			Kosh.CorrDelay++;
+		}
+	}
+	else {
+		// После возобновлении подачи ждем
+		if (Kosh.CorrDelay) {
+			Kosh.CorrDelay--;
+
+			// Это должно быть в lambda.c, все это должно работать на уровне лямбда коррекции,
+			// не хочу просто лезть еще туда, пока пускать этот кусок кода будет тут.
+			d.corr.lambda[0] = 0;
+			d.corr.lambda[1] = 0;
+		}
+	}
 }
 
 // FUEL_INJECT
