@@ -36,7 +36,9 @@
 #include "mathemat.h"
 #include "vstimer.h"
 
-#define EGO_FC_DELAY 6           //!< 6 strokes
+// 6 тактов это мало, после отключения топлива
+// лямюда еще долго тормозит.
+#define EGO_FC_DELAY 100           //!< 6 strokes
 
 /**Internal state variables*/
 typedef struct
