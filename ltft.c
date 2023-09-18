@@ -51,6 +51,8 @@
 
 // Структура для хранения переменных
 typedef struct {
+	int16_t RPM;					// Обороты
+	int16_t MAP;					// Давление
 	int16_t RPMGrid[16];			// Сетка оборотов x1
 	int16_t PressureGrid[16];		// Сетка давления x64
 	int16_t Kf;						// Коэффициент выравнивания x64
@@ -69,9 +71,11 @@ typedef struct {
 } Kosh_t;
 
 // Инициализация структуры
-Kosh_t Kosh = {.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 3200, 3500, 3800, 4100, 4500, 5000, 6000},
+Kosh_t Kosh = {.RPM = 0,
+				.MAP = 0,
+				.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 3200, 3500, 3800, 4100, 4500, 5000, 6000},
 				.PressureGrid = {1280, 1920, 2560, 3200, 3840, 4480, 5120, 5760, 6400, 7040, 7680, 8320, 8960, 9600, 10560, 11520},
-				.Kf = 0.0,
+				.Kf = 0,
 				.x1 = 0,
 				.x2 = 0,
 				.y1 = 0,
@@ -81,8 +85,8 @@ Kosh_t Kosh = {.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 
 				.CalcVE = 0,
 				.TargetVe = 0,
 				.CellsProp = {0, 0, 0, 0},
-				.VEAlignment = {0.0, 0.0, 0.0, 0.0},
-				.AddVE = {0.0, 0.0, 0.0, 0.0},
+				.VEAlignment = {0, 0, 0, 0},
+				.AddVE = {0, 0, 0, 0},
 				.LTFTAdd = {0, 0, 0, 0}
 			};
 
@@ -93,16 +97,17 @@ Kosh_t Kosh = {.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 
 // Расчет коррекции 
 void kosh_ltft_control(void) {
 	#ifdef DEBUG_MODE
-		d.sens.frequen = 1385;
-		d.sens.map = 2200;
-		d.corr.lambda[0] = 10; // 41 / 512 = 0.08
-
-		Kosh.Kf = 13; // 13 / 64 = 0.2
-	#else
-		// Коэффициент выравнивания будет пока храниться в таблице VE2
-		// в левом верхнем углу. x2064 -> x64
-		Kosh.Kf = _GWU12(inj_ve2, 15, 0) >> 5;
+		d.sens.frequen = 6600;
+		d.sens.map = 12000;
+		d.corr.lambda[0] = 41; // 41 / 512 = 0.08
 	#endif
+
+	// Коэффициент выравнивания будет пока храниться в таблице VE2
+	// в левом верхнем углу. x2048 -> x64
+	Kosh.Kf = _GWU12(inj_ve2, 15, 0) >> 5;
+
+	Kosh.RPM = d.sens.frequen;
+	Kosh.MAP = d.sens.map;
 
 	// Поиск задействованных ячеек в расчете
 	kosh_find_cells();
@@ -130,7 +135,7 @@ void kosh_ltft_control(void) {
 	// Расчет веса точек в коррекции
 	kosh_points_weight();
 
-	Kosh.CalcVE = bilinear_interpolation(d.sens.frequen, d.sens.map,
+	Kosh.CalcVE = bilinear_interpolation(Kosh.RPM, Kosh.MAP,
 								Kosh.LTFTVE[0],
 								Kosh.LTFTVE[1],
 								Kosh.LTFTVE[2], 
@@ -190,65 +195,50 @@ void kosh_ltft_control(void) {
 }
 
 void kosh_write_value(uint8_t y, uint8_t x, uint8_t n) {
-	// Чтобы не перетерлись значения при совпадении оборотов или давления
-	if (!Kosh.CellsProp[n]) {return;}
+	// Ограничение значения коррекции  +-15 % (0.15 * 512 = 77)
+	int16_t Value = d.inj_ltft1[y][x];
 
-	// Ограничение значения коррекции  +-14 % (0.14 * 512 = 72)
-	int16_t Value = 0;
-	if (Value + Kosh.LTFTAdd[n] > 72) {Kosh.LTFTAdd[n] = 72 - Value;}
-	else if (Value + Kosh.LTFTAdd[n] < -72) {Kosh.LTFTAdd[n] = -72 - Value;}
+	if (Value + Kosh.LTFTAdd[n] > 77) {
+		Kosh.LTFTAdd[n] = 77 - Value;
+	}
+	else if (Value + Kosh.LTFTAdd[n] < -77) {
+		Kosh.LTFTAdd[n] = -77 - Value;
+	}
 
 	// Добавляем коррекцию в таблицу LTFT (Давление / Обороты)
 	d.inj_ltft1[y][x] += Kosh.LTFTAdd[n];
+	//d.inj_ltft1[y][x] = 50;
 }
 
 // Поиск задействованных ячеек в расчете	
 void kosh_find_cells(void) {
+	// Чтобы убрать здесь и дальше исключительные ситуации,
+	// когда обороты меньше сетки или попали точно в сетку и т.п.,
+	// буду просто добавлять или отнимать единицу
+
 	// Обороты
-	if (d.sens.frequen <= Kosh.RPMGrid[0]) {
-		Kosh.x1 = 0;
-		Kosh.x2 = 0;
-	}
-	else if (d.sens.frequen >= Kosh.RPMGrid[15]) {
-		Kosh.x1 = 15;
-		Kosh.x2 = 15;
-	}
-	else {
-		for (uint8_t i = 0; i < 15; ++i) {
-			if (Kosh.RPMGrid[i] == d.sens.frequen) {
-				Kosh.x1 = i;
-				Kosh.x2 = i;
-				break;
-			}
-			else if (d.sens.frequen < Kosh.RPMGrid[i]) {
-				Kosh.x1 = i - 1;
-				Kosh.x2 = i;
-				break;
-			}
+	if (Kosh.RPM <= Kosh.RPMGrid[0]) {Kosh.RPM = Kosh.RPMGrid[0] + 1;}
+	if (Kosh.RPM >= Kosh.RPMGrid[15]) {Kosh.RPM = Kosh.RPMGrid[15] - 1;}
+
+	for (uint8_t i = 1; i < 16; i++) {
+		if (Kosh.RPM <= Kosh.RPMGrid[i]) {
+			if (Kosh.RPM == Kosh.RPMGrid[i]) {Kosh.RPM -= 1;}
+			Kosh.x1 = i - 1;
+			Kosh.x2 = i;
+			break;
 		}
 	}
-	
+
 	// Давление
-	if (d.sens.map <= Kosh.PressureGrid[0]) {
-		Kosh.y1 = 0;
-		Kosh.y2 = 0;
-	}
-	else if (d.sens.map >= Kosh.PressureGrid[15]) {
-		Kosh.y1 = 15;
-		Kosh.y2 = 15;
-	}
-	else {
-		for (uint8_t i = 0; i < 15; ++i) {
-			if (Kosh.PressureGrid[i] == d.sens.map) {
-				Kosh.y1 = i;
-				Kosh.y2 = i;
-				break;
-			}
-			else if (d.sens.map < Kosh.PressureGrid[i]) {
-				Kosh.y1 = i - 1;
-				Kosh.y2 = i;
-				break;
-			}
+	if (Kosh.MAP <= Kosh.PressureGrid[0]) {Kosh.MAP = Kosh.PressureGrid[0] + 1;}
+	if (Kosh.MAP >= Kosh.PressureGrid[15]) {Kosh.MAP = Kosh.PressureGrid[15] - 1;}
+
+	for (uint8_t i = 1; i < 16; i++) {
+		if (Kosh.MAP <= Kosh.PressureGrid[i]) {
+			if (Kosh.MAP == Kosh.PressureGrid[i]) {Kosh.MAP -= 1;}
+			Kosh.y1 = i - 1;
+			Kosh.y2 = i;
+			break;
 		}
 	}
 }
@@ -259,51 +249,20 @@ void kosh_points_weight(void) {
 	int16_t x2 = Kosh.RPMGrid[Kosh.x2];
 	int16_t y1 = Kosh.PressureGrid[Kosh.y1];
 	int16_t y2 = Kosh.PressureGrid[Kosh.y2];
-	
-	int16_t x = d.sens.frequen;
-	int16_t y = d.sens.map;
 
-	// Если обороты и давление точно попали в точку
-	if (x2 == x1 && y2 == y1) {
-		Kosh.CellsProp[0] = 2048;
-		Kosh.CellsProp[1] = 0;
-		Kosh.CellsProp[2] = 0;
-		Kosh.CellsProp[3] = 0;
-		return;
-	}
+	int16_t x = Kosh.RPM;
+	int16_t y = Kosh.MAP;
 
 	int16_t CFx1 = 0; // x2048 << 11
 	int16_t CFx2 = 0; // x2048
 	int16_t CFy1 = 0; // x2048
 	int16_t CFy2 = 0; // x2048
 
-	if (x2 != x1) {
-		CFx1 = (int32_t) (x2 - x) * 2048 / (x2 - x1);
-		CFx2 = (int32_t) (x - x1) * 2048 / (x2 - x1);
-	}
+	CFx1 = (int32_t) (x2 - x) * 2048 / (x2 - x1);
+	CFx2 = (int32_t) (x - x1) * 2048 / (x2 - x1);
 				
-	if (y2 != y1) {
-		CFy1 = (int32_t) (y2 - y) * 2048 / (y2 - y1);
-		CFy2 = (int32_t) (y - y1) * 2048 / (y2 - y1);
-	}
-
-	// Если обороты попали в точку
-	if (x1 == x2) {
-		Kosh.CellsProp[0] = CFy1;
-		Kosh.CellsProp[1] = CFy2;
-		Kosh.CellsProp[2] = 0.0;
-		Kosh.CellsProp[3] = 0.0;
-		return;
-	}
-
-	// Если давление попало в точку
-	if (y1 == y2) {
-		Kosh.CellsProp[0] = CFx1;
-		Kosh.CellsProp[1] = 0.0;
-		Kosh.CellsProp[2] = 0.0;
-		Kosh.CellsProp[3] = CFx2;
-		return;
-	}
+	CFy1 = (int32_t) (y2 - y) * 2048 / (y2 - y1);
+	CFy2 = (int32_t) (y - y1) * 2048 / (y2 - y1);
 
 	Kosh.CellsProp[0] = ((int32_t) CFx1 * CFy1) >> 11;
 	Kosh.CellsProp[1] = ((int32_t) CFx1 * CFy2) >> 11;
@@ -329,7 +288,7 @@ void kosh_add_ve_calculate(void) {
 		SummDelta += ((int32_t) G[i] * Kosh.CellsProp[i]) >> 11;
 	}
 
-	int16_t CalcVE2 = bilinear_interpolation(d.sens.frequen, d.sens.map,
+	int16_t CalcVE2 = bilinear_interpolation(Kosh.RPM, Kosh.MAP,
 									Kosh.LTFTVE[0] + Kosh.VEAlignment[0],
 									Kosh.LTFTVE[1] + Kosh.VEAlignment[1],
 									Kosh.LTFTVE[2] + Kosh.VEAlignment[2],
