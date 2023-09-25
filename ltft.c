@@ -37,7 +37,6 @@
 #include "mathemat.h"
 #include "bitmask.h"
 
-
 // Режим отладки
 //#define DEBUG_MODE
 
@@ -51,20 +50,18 @@
 
 // Структура для хранения переменных
 typedef struct {
-	int16_t RPM;					// Обороты
-	int16_t MAP;					// Давление
-	int16_t RPMGrid[16];			// Сетка оборотов x1
-	int16_t PressureGrid[16];		// Сетка давления x64
-	int16_t Kf;						// Коэффициент выравнивания x64
+	uint16_t RPM;					// Обороты x1
+	uint16_t MAP;					// Давление x64
+	uint16_t Kf;					// Коэффициент выравнивания x64
 	uint8_t x1;						// Координаты рабочих ячеек Обороты
 	uint8_t x2;						// -//-
 	uint8_t y1;						// Координаты рабочих ячеек Давление
 	uint8_t y2;						// -//-
-	int16_t StartVE[4];				// Начальные значения VE x2048
-	int16_t LTFTVE[4];				// Значения VE с текущей коррекцией LTFT x2048
-	int16_t CalcVE;					// Интерполяция начальной VE x2048
-	int16_t TargetVe;				// Целевое VE x2048
-	int16_t CellsProp[4];			// Вес ячеек в коррекции x2048
+	uint16_t StartVE[4];			// Начальные значения VE x2048
+	uint16_t LTFTVE[4];				// Значения VE с текущей коррекцией LTFT x2048
+	uint16_t CalcVE;				// Интерполяция начальной VE x2048
+	uint16_t TargetVe;				// Целевое VE x2048
+	uint16_t CellsProp[4];			// Вес ячеек в коррекции x2048
 	int16_t VEAlignment[4];			// Добавка для выравнивания ячеек x2048
 	int16_t AddVE[4];				// Добавка к VE по коррекции x2048
 	int16_t LTFTAdd[4];				// Добавочный коэффициент LTFT x512
@@ -73,21 +70,19 @@ typedef struct {
 // Инициализация структуры
 Kosh_t Kosh = {.RPM = 0,
 				.MAP = 0,
-				.RPMGrid = {900, 1100, 1300, 1500, 1700, 2000, 2300, 2600, 2900, 3200, 3500, 3800, 4100, 4500, 5000, 6000},
-				.PressureGrid = {1280, 1920, 2560, 3200, 3840, 4480, 5120, 5760, 6400, 7040, 7680, 8320, 8960, 9600, 10560, 11520},
 				.Kf = 0,
 				.x1 = 0,
 				.x2 = 0,
 				.y1 = 0,
 				.y2 = 0,
-				.StartVE = {0, 0, 0, 0},
-				.LTFTVE = {0, 0, 0, 0},
+				.StartVE = {0},
+				.LTFTVE = {0},
 				.CalcVE = 0,
 				.TargetVe = 0,
-				.CellsProp = {0, 0, 0, 0},
-				.VEAlignment = {0, 0, 0, 0},
-				.AddVE = {0, 0, 0, 0},
-				.LTFTAdd = {0, 0, 0, 0}
+				.CellsProp = {0},
+				.VEAlignment = {0},
+				.AddVE = {0},
+				.LTFTAdd = {0}
 			};
 
 // Порядок нумерации ячеек в массивах
@@ -97,17 +92,23 @@ Kosh_t Kosh = {.RPM = 0,
 // Расчет коррекции 
 void kosh_ltft_control(void) {
 	#ifdef DEBUG_MODE
-		d.sens.frequen = 6600;
-		d.sens.map = 12000;
-		d.corr.lambda[0] = 41; // 41 / 512 = 0.08
+		// Обороты, давление и лямбда коррекция
+		// для отладки будут браться из VE
+
+		// Обороты VE * 2
+		Kosh.RPM = _GWU12(inj_ve2, 14, 0) << 1;
+		// Давление VE * 4
+		Kosh.MAP = _GWU12(inj_ve2, 14, 1) << 2;
+		// Лямбда коррекция
+		d.corr.lambda[0] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
+	#else
+		Kosh.RPM = d.sens.frequen;
+		Kosh.MAP = d.sens.map;
 	#endif
 
 	// Коэффициент выравнивания будет пока храниться в таблице VE2
-	// в левом верхнем углу. x2048 -> x64
+	// в левом верхнем углу, x2048 -> x64
 	Kosh.Kf = _GWU12(inj_ve2, 15, 0) >> 5;
-
-	Kosh.RPM = d.sens.frequen;
-	Kosh.MAP = d.sens.map;
 
 	// Поиск задействованных ячеек в расчете
 	kosh_find_cells();
@@ -127,10 +128,10 @@ void kosh_ltft_control(void) {
 	Kosh.StartVE[3] = _GWU12(inj_ve, Kosh.y1, Kosh.x2);
 	
 	// Вычисление значений с учетом имеющейся коррекции LTFT
-	Kosh.LTFTVE[0] = ((int32_t) Kosh.StartVE[0] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x1])) >> 9;
-	Kosh.LTFTVE[1] = ((int32_t) Kosh.StartVE[1] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x1])) >> 9;
-	Kosh.LTFTVE[2] = ((int32_t) Kosh.StartVE[2] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x2])) >> 9;
-	Kosh.LTFTVE[3] = ((int32_t) Kosh.StartVE[3] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x2])) >> 9;
+	Kosh.LTFTVE[0] = ((uint32_t) Kosh.StartVE[0] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x1])) >> 9;
+	Kosh.LTFTVE[1] = ((uint32_t) Kosh.StartVE[1] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x1])) >> 9;
+	Kosh.LTFTVE[2] = ((uint32_t) Kosh.StartVE[2] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x2])) >> 9;
+	Kosh.LTFTVE[3] = ((uint32_t) Kosh.StartVE[3] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x2])) >> 9;
 
 	// Расчет веса точек в коррекции
 	kosh_points_weight();
@@ -140,21 +141,30 @@ void kosh_ltft_control(void) {
 								Kosh.LTFTVE[1],
 								Kosh.LTFTVE[2], 
 								Kosh.LTFTVE[3],
-								Kosh.RPMGrid[Kosh.x1],
-								Kosh.PressureGrid[Kosh.y1],
-								Kosh.RPMGrid[Kosh.x2] - Kosh.RPMGrid[Kosh.x1],
-								Kosh.PressureGrid[Kosh.y2] - Kosh.PressureGrid[Kosh.y1],
+								PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]),
+								PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]),
+								PGM_GET_WORD(&fw_data.exdata.rpm_grid_sizes[Kosh.x1]),
+								PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]),
 								1);
 
 	// Целевое VE 
-	Kosh.TargetVe = ((int32_t) Kosh.CalcVE * (512 + d.corr.lambda[0])) >> 9;
+	Kosh.TargetVe = ((uint32_t) Kosh.CalcVE * (512 + d.corr.lambda[0])) >> 9;
 	Kosh.TargetVe += 1;
 
 	// Расчет добавки для выравнивания ячеек
+	int8_t Ng = 1;
 	for (uint8_t i = 0; i < 4; ++i) {
+		// Тут может быть орицательное цисло, и сдвигать биты в этом случае -
+		// это плохая идея, потому минус добавляем в конце.
+		Ng = 1;
 		Kosh.VEAlignment[i] = Kosh.TargetVe - Kosh.LTFTVE[i];
-		Kosh.VEAlignment[i] = ((int32_t) Kosh.VEAlignment[i] * Kosh.CellsProp[i]) >> 11;
-		Kosh.VEAlignment[i] = ((int32_t) Kosh.VEAlignment[i] * Kosh.Kf) >> 6;
+		if (Kosh.VEAlignment[i] < 0) {
+			Ng = -1;
+			Kosh.VEAlignment[i] *= Ng;
+		}
+		Kosh.VEAlignment[i] = ((uint32_t) Kosh.VEAlignment[i] * Kosh.CellsProp[i]) >> 11;
+		Kosh.VEAlignment[i] = ((uint32_t) Kosh.VEAlignment[i] * Kosh.Kf) >> 6;
+		Kosh.VEAlignment[i] *= Ng;
 	}
 
 	// Расчет добавки по лямбде
@@ -195,14 +205,14 @@ void kosh_ltft_control(void) {
 }
 
 void kosh_write_value(uint8_t y, uint8_t x, uint8_t n) {
-	// Ограничение значения коррекции  +-15 % (0.15 * 512 = 77)
+	// Ограничение значения коррекции -14...+15  % (0.15 * 512 = 77)
 	int16_t Value = d.inj_ltft1[y][x];
 
 	if (Value + Kosh.LTFTAdd[n] > 77) {
 		Kosh.LTFTAdd[n] = 77 - Value;
 	}
-	else if (Value + Kosh.LTFTAdd[n] < -77) {
-		Kosh.LTFTAdd[n] = -77 - Value;
+	else if (Value + Kosh.LTFTAdd[n] < -72) {
+		Kosh.LTFTAdd[n] = -72 - Value;
 	}
 
 	// Добавляем коррекцию в таблицу LTFT (Давление / Обороты)
@@ -217,12 +227,18 @@ void kosh_find_cells(void) {
 	// буду просто добавлять или отнимать единицу
 
 	// Обороты
-	if (Kosh.RPM <= Kosh.RPMGrid[0]) {Kosh.RPM = Kosh.RPMGrid[0] + 1;}
-	if (Kosh.RPM >= Kosh.RPMGrid[15]) {Kosh.RPM = Kosh.RPMGrid[15] - 1;}
+	if (Kosh.RPM <= PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[0])) {
+		Kosh.RPM = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[0]) + 1;
+	}
+	if (Kosh.RPM >= PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[15])) {
+		Kosh.RPM = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[15]) - 1;
+	}
 
 	for (uint8_t i = 1; i < 16; i++) {
-		if (Kosh.RPM <= Kosh.RPMGrid[i]) {
-			if (Kosh.RPM == Kosh.RPMGrid[i]) {Kosh.RPM -= 1;}
+		if (Kosh.RPM <= PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[i])) {
+			if (Kosh.RPM == PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[i])) {
+				Kosh.RPM -= 1;
+			}
 			Kosh.x1 = i - 1;
 			Kosh.x2 = i;
 			break;
@@ -230,12 +246,18 @@ void kosh_find_cells(void) {
 	}
 
 	// Давление
-	if (Kosh.MAP <= Kosh.PressureGrid[0]) {Kosh.MAP = Kosh.PressureGrid[0] + 1;}
-	if (Kosh.MAP >= Kosh.PressureGrid[15]) {Kosh.MAP = Kosh.PressureGrid[15] - 1;}
+	if (Kosh.MAP <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[0])) {
+		Kosh.MAP = PGM_GET_WORD(&fw_data.exdata.load_grid_points[0]) + 1;
+	}
+	if (Kosh.MAP >= PGM_GET_WORD(&fw_data.exdata.load_grid_points[15])) {
+		Kosh.MAP = PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) - 1;
+	}
 
 	for (uint8_t i = 1; i < 16; i++) {
-		if (Kosh.MAP <= Kosh.PressureGrid[i]) {
-			if (Kosh.MAP == Kosh.PressureGrid[i]) {Kosh.MAP -= 1;}
+		if (Kosh.MAP <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+			if (Kosh.MAP == PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+				Kosh.MAP -= 1;
+			}
 			Kosh.y1 = i - 1;
 			Kosh.y2 = i;
 			break;
@@ -245,67 +267,67 @@ void kosh_find_cells(void) {
 
 // Расчет веса точек в коррекции
 void kosh_points_weight(void) {
-	int16_t x1 = Kosh.RPMGrid[Kosh.x1];
-	int16_t x2 = Kosh.RPMGrid[Kosh.x2];
-	int16_t y1 = Kosh.PressureGrid[Kosh.y1];
-	int16_t y2 = Kosh.PressureGrid[Kosh.y2];
+	uint16_t x1 = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]);
+	uint16_t x2 = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x2]);
+	uint16_t y1 = PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]);
+	uint16_t y2 = PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y2]);
 
-	int16_t x = Kosh.RPM;
-	int16_t y = Kosh.MAP;
+	uint16_t x = Kosh.RPM;
+	uint16_t y = Kosh.MAP;
 
-	int16_t CFx1 = 0; // x2048 << 11
-	int16_t CFx2 = 0; // x2048
-	int16_t CFy1 = 0; // x2048
-	int16_t CFy2 = 0; // x2048
+	uint16_t CFx1 = 0; // x2048 << 11
+	uint16_t CFx2 = 0; // x2048
+	uint16_t CFy1 = 0; // x2048
+	uint16_t CFy2 = 0; // x2048
 
-	CFx1 = (int32_t) (x2 - x) * 2048 / (x2 - x1);
-	CFx2 = (int32_t) (x - x1) * 2048 / (x2 - x1);
+	CFx1 = (uint32_t) (x2 - x) * 2048 / (x2 - x1);
+	CFx2 = (uint32_t) (x - x1) * 2048 / (x2 - x1);
 				
-	CFy1 = (int32_t) (y2 - y) * 2048 / (y2 - y1);
-	CFy2 = (int32_t) (y - y1) * 2048 / (y2 - y1);
+	CFy1 = (uint32_t) (y2 - y) * 2048 / (y2 - y1);
+	CFy2 = (uint32_t) (y - y1) * 2048 / (y2 - y1);
 
-	Kosh.CellsProp[0] = ((int32_t) CFx1 * CFy1) >> 11;
-	Kosh.CellsProp[1] = ((int32_t) CFx1 * CFy2) >> 11;
-	Kosh.CellsProp[2] = ((int32_t) CFx2 * CFy2) >> 11;
-	Kosh.CellsProp[3] = ((int32_t) CFx2 * CFy1) >> 11;
+	Kosh.CellsProp[0] = ((uint32_t) CFx1 * CFy1) >> 11;
+	Kosh.CellsProp[1] = ((uint32_t) CFx1 * CFy2) >> 11;
+	Kosh.CellsProp[2] = ((uint32_t) CFx2 * CFy2) >> 11;
+	Kosh.CellsProp[3] = ((uint32_t) CFx2 * CFy1) >> 11;
 }
 
 // Расчет добавки к VE
 void kosh_add_ve_calculate(void) {
 	// Значение ячейки VE * Коррекцию * Долю
-	int16_t G[4] = {0, 0, 0, 0};
-	int16_t SummDelta = 0;
+	uint16_t G[4] = {0, 0, 0, 0};
+	uint16_t SummDelta = 0;
 
-	// Битовый сдвиг не работает с отрицательными числами,
+	// Если сдвигать биты с отрицательными числами, это может плохо закончиться.
 	// Потому d.corr.lambda[0] временно делаем положительным.
 	int8_t Ng = 1;
 	if (d.corr.lambda[0] < 0) {Ng = -1;}
 
 	for (uint8_t i = 0; i < 4; ++i) {
 		G[i] = ((int32_t) Kosh.LTFTVE[i] * d.corr.lambda[0] * Ng) >> 9;
-		G[i] = ((int32_t) G[i] * Kosh.CellsProp[i]) >> 11;
+		G[i] = ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
 		// Сумма отклонения
-		SummDelta += ((int32_t) G[i] * Kosh.CellsProp[i]) >> 11;
+		SummDelta += ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
 	}
 
-	int16_t CalcVE2 = bilinear_interpolation(Kosh.RPM, Kosh.MAP,
+	uint16_t CalcVE2 = bilinear_interpolation(Kosh.RPM, Kosh.MAP,
 									Kosh.LTFTVE[0] + Kosh.VEAlignment[0],
 									Kosh.LTFTVE[1] + Kosh.VEAlignment[1],
 									Kosh.LTFTVE[2] + Kosh.VEAlignment[2],
 									Kosh.LTFTVE[3] + Kosh.VEAlignment[3],
-									Kosh.RPMGrid[Kosh.x1],
-									Kosh.PressureGrid[Kosh.y1],
-									Kosh.RPMGrid[Kosh.x2] - Kosh.RPMGrid[Kosh.x1],
-									Kosh.PressureGrid[Kosh.y2] - Kosh.PressureGrid[Kosh.y1],
+									PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]),
+									PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]),
+									PGM_GET_WORD(&fw_data.exdata.rpm_grid_sizes[Kosh.x1]),
+									PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]),
 									1);
 
 	// Коэффициент отклонения от цели
-	int16_t Cf = (int32_t) (Kosh.TargetVe - CalcVE2) * 1024 / SummDelta;
+	uint16_t Cf = (int32_t) abs(Kosh.TargetVe - CalcVE2) * 1024 / SummDelta;
 
 	// Добавка к VE
 	for (uint8_t i = 0; i < 4; ++i) {
-		Kosh.AddVE[i] = ((int32_t) G[i] * Cf * Ng) >> 10;
-		Kosh.AddVE[i] = Kosh.AddVE[i] * Ng;
+		Kosh.AddVE[i] = ((uint32_t) G[i] * Cf) >> 10;
+		Kosh.AddVE[i] *= Ng;
 	}
 }
 
