@@ -36,9 +36,10 @@
 #include "mathemat.h"
 #include "vstimer.h"
 
-// 6 тактов это мало, после отключения топлива
-// лямюда еще долго тормозит.
-#define EGO_FC_DELAY 100           //!< 6 strokes
+// Время задержки после обогащения ускорения
+#define EGO_AC_DELAY 65
+// Время задержки после отключения топлива
+#define EGO_FC_DELAY 200
 
 /**Internal state variables*/
 typedef struct
@@ -255,13 +256,21 @@ void lambda_stroke_event_notification(void)
   if ((d.sens.gas && IOCFG_CHECK(IOP_GD_STP))) {
 #endif
 
+   // Время задержки при обогащении вынеc отдельно
+   if (d.acceleration)
+   {
+      ego.fc_delay[i] = EGO_AC_DELAY;
+      d.corr.lambda[i] = 0;
+      continue;
+   }
    //Turn off EGO correction on overrun or rev. limiting or on idling (if enabled)
-   if (!d.ie_valve || d.fc_revlim || d.acceleration || (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR)))
+   if (!d.ie_valve || d.fc_revlim || (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR)))
    { //overrun or rev.limiting
     ego.fc_delay[i] = EGO_FC_DELAY;
     d.corr.lambda[i] = 0;
     continue;
    }
+
    else
    {
     if (ego.fc_delay[i])
