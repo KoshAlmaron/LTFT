@@ -39,6 +39,8 @@
 		void kosh_find_cells(void);
 		void kosh_points_weight(void);
 		void kosh_add_ve_calculate(void);
+		void kosh_rpm_map_calc(void);
+		void kosh_circular_buffer_update(void);
 		// ====================================================
 
 		// Get LTFT status

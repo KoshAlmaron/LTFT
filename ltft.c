@@ -39,6 +39,10 @@
 
 // Режим отладки
 //#define DEBUG_MODE
+// Раскомментировать для включения кольцевого буфера
+#define KOSH_CIRCULAR_BUFFER_ENABLE
+// Размер буфера
+#define KOSH_CBS 10
 
 // =============================================================================
 // ============ Костыль для коррекции ячеек с помощью интерполяции =============
@@ -65,10 +69,18 @@ typedef struct {
 	int16_t VEAlignment[4];			// Добавка для выравнивания ячеек x2048
 	int16_t AddVE[4];				// Добавка к VE по коррекции x2048
 	int16_t LTFTAdd[4];				// Добавочный коэффициент LTFT x512
+	uint16_t BufferRPM[KOSH_CBS];	// Кольцевой буфер оборотов
+	uint16_t BufferMAP[KOSH_CBS];	// Кольцевой буфер давления
+	uint8_t BufferIndex;			// Текущая позиция буфера
+	uint8_t BufferAvg;				// Текущая позиция усреднения
+	uint32_t BufferSumRPM;			// Переменная для суммирования оборотов
+	uint32_t BufferSumMAP;			// Переменная для суммирования давления
+	uint8_t LambdaLag[16]; 			// Задержка лямбды в шагах сетки (1 шаг = 8 тактов)
 } Kosh_t;
 
 // Инициализация структуры
-Kosh_t Kosh = {.RPM = 0,
+Kosh_t Kosh = {
+				.RPM = 0,
 				.MAP = 0,
 				.Kf = 0,
 				.x1 = 0,
@@ -82,7 +94,14 @@ Kosh_t Kosh = {.RPM = 0,
 				.CellsProp = {0},
 				.VEAlignment = {0},
 				.AddVE = {0},
-				.LTFTAdd = {0}
+				.LTFTAdd = {0},
+				.BufferRPM = {0},
+				.BufferMAP = {0},
+				.BufferIndex = 0,
+				.BufferAvg = 0,
+				.BufferSumRPM = 0,
+				.BufferSumMAP = 0,
+				.LambdaLag = {7, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4}
 			};
 
 // Порядок нумерации ячеек в массивах
@@ -94,7 +113,6 @@ void kosh_ltft_control(void) {
 	#ifdef DEBUG_MODE
 		// Обороты, давление и лямбда коррекция
 		// для отладки будут браться из VE
-
 		// Обороты VE * 2
 		Kosh.RPM = _GWU12(inj_ve2, 14, 0) << 1;
 		// Давление VE * 4
@@ -102,8 +120,15 @@ void kosh_ltft_control(void) {
 		// Лямбда коррекция
 		d.corr.lambda[0] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
 	#else
-		Kosh.RPM = d.sens.frequen;
-		Kosh.MAP = d.sens.map;
+		// Уходим, пока не накопится коррекция
+		if (d.corr.lambda[0] > -3 && d.corr.lambda[0] < 3) {return;}
+
+		#ifdef KOSH_CIRCULAR_BUFFER_ENABLE
+			kosh_rpm_map_calc();
+		#else
+			Kosh.RPM = d.sens.frequen;
+			Kosh.MAP = d.sens.map;
+		#endif
 	#endif
 
 	// Коэффициент выравнивания будет пока храниться в таблице VE2
@@ -331,6 +356,61 @@ void kosh_add_ve_calculate(void) {
 	}
 }
 
+// Вычисление оборотов и давления с учетом задержки
+void kosh_rpm_map_calc(void) {
+	// Берем последние 4 значение давления для вычисления среднего
+	uint32_t MAPAVG = 0;
+	for (uint8_t i = 0; i < 4; i++) {
+		int8_t Index = Kosh.BufferIndex - i;
+		if (Index < 0) {Index = KOSH_CBS + Index;}
+		MAPAVG += Kosh.BufferMAP[Index];
+	}
+
+  	MAPAVG = MAPAVG >> 2;
+  	if (MAPAVG > PGM_GET_WORD(&fw_data.exdata.load_grid_points[15])) {
+  		MAPAVG = PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]);
+  	}
+
+  	// Находим задержку из сетки
+  	for (uint8_t i = 0; i < 16; i++) {
+  		if (MAPAVG <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+  			// Находим индекс оборотов и давления
+  			int8_t Index = Kosh.BufferIndex - Kosh.LambdaLag[i];
+  			if (Index < 0) {Index = KOSH_CBS + Index;}
+
+  			// Вытаскиваем оборотов и давления из прошлого
+  			Kosh.RPM = Kosh.BufferRPM[Index];
+  			Kosh.MAP = Kosh.BufferMAP[Index];
+  			break;
+  		}
+ 	}
+}
+
+// Обновление буфера
+void kosh_circular_buffer_update(void) {
+	Kosh.BufferSumRPM += d.sens.inst_frq;
+	Kosh.BufferSumMAP += d.sens.inst_map;
+	Kosh.BufferAvg++;
+
+	// Достигнут предел усреднения
+	if (Kosh.BufferAvg >= 8) {
+		uint16_t RPM = Kosh.BufferSumRPM >> 3;
+		Kosh.BufferRPM[Kosh.BufferIndex] = RPM;
+		uint16_t MAP = Kosh.BufferSumMAP >> 3;
+		Kosh.BufferMAP[Kosh.BufferIndex] = MAP;
+
+		Kosh.BufferAvg = 0;
+		Kosh.BufferSumRPM = 0;
+		Kosh.BufferSumMAP = 0;
+
+		Kosh.BufferIndex++;
+		// Достигнут конец буфера
+		if (Kosh.BufferIndex >= KOSH_CBS) {
+			Kosh.BufferIndex = 0;
+		}
+	}
+}
+
 // =============================================================================
 // =============================================================================
 // =============================================================================
@@ -507,6 +587,10 @@ uint8_t ltft_is_active(void) {
 void ltft_stroke_event_notification(void) {
 	++ltft[0].strokes;
 	++ltft[1].strokes;
+
+	#ifdef KOSH_CIRCULAR_BUFFER_ENABLE
+		kosh_circular_buffer_update();
+	#endif
 }
 
 // FUEL_INJECT
