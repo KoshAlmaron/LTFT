@@ -42,7 +42,7 @@
 // Раскомментировать для включения кольцевого буфера
 #define KOSH_CIRCULAR_BUFFER_ENABLE
 // Размер буфера
-#define KOSH_CBS 10
+#define KOSH_CBS 18
 
 // =============================================================================
 // ============ Костыль для коррекции ячеек с помощью интерполяции =============
@@ -75,7 +75,6 @@ typedef struct {
 	uint8_t BufferAvg;				// Текущая позиция усреднения
 	uint32_t BufferSumRPM;			// Переменная для суммирования оборотов
 	uint32_t BufferSumMAP;			// Переменная для суммирования давления
-	uint8_t LambdaLag[16]; 			// Задержка лямбды в шагах сетки (1 шаг = 8 тактов)
 } Kosh_t;
 
 // Инициализация структуры
@@ -101,9 +100,10 @@ Kosh_t Kosh = {
 				.BufferAvg = 0,
 				.BufferSumRPM = 0,
 				.BufferSumMAP = 0,
-				.LambdaLag = {7, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4}
 			};
 
+
+// PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[fcs.ta_i])
 // Порядок нумерации ячеек в массивах
 //	1  2
 //	0  3
@@ -119,6 +119,13 @@ void kosh_ltft_control(void) {
 		Kosh.MAP = _GWU12(inj_ve2, 14, 1) << 2;
 		// Лямбда коррекция
 		d.corr.lambda[0] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
+
+		for (uint8_t i = 0; i < 16; ++i) {
+			d.inj_ltft2[0][i] = PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i]);
+			d.inj_ltft2[1][i] = (PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i])) >> 1;
+			int8_t Index = (PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i])) >> 2;
+			d.inj_ltft2[2][i] = Index;
+		}
 	#else
 		// Уходим, пока не накопится коррекция
 		if (d.corr.lambda[0] > -3 && d.corr.lambda[0] < 3) {return;}
@@ -358,24 +365,26 @@ void kosh_add_ve_calculate(void) {
 
 // Вычисление оборотов и давления с учетом задержки
 void kosh_rpm_map_calc(void) {
-	// Берем последние 4 значение давления для вычисления среднего
+	// Берем последние 8 значений давления для вычисления среднего
 	uint32_t MAPAVG = 0;
-	for (uint8_t i = 0; i < 4; i++) {
+	for (uint8_t i = 0; i < 8; i++) {
 		int8_t Index = Kosh.BufferIndex - i;
 		if (Index < 0) {Index = KOSH_CBS + Index;}
 		MAPAVG += Kosh.BufferMAP[Index];
 	}
 
-  	MAPAVG = MAPAVG >> 2;
+  	MAPAVG = MAPAVG >> 3;
   	if (MAPAVG > PGM_GET_WORD(&fw_data.exdata.load_grid_points[15])) {
   		MAPAVG = PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]);
   	}
-
   	// Находим задержку из сетки
   	for (uint8_t i = 0; i < 16; i++) {
   		if (MAPAVG <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+
+  			// Значения лага хранятся в таблице "Такты ОПП (газ)"
+  			int8_t Index = (PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i])) >> 2;
   			// Находим индекс оборотов и давления
-  			int8_t Index = Kosh.BufferIndex - Kosh.LambdaLag[i];
+  			Index = Kosh.BufferIndex - Index;
   			if (Index < 0) {Index = KOSH_CBS + Index;}
 
   			// Вытаскиваем оборотов и давления из прошлого
@@ -393,10 +402,10 @@ void kosh_circular_buffer_update(void) {
 	Kosh.BufferAvg++;
 
 	// Достигнут предел усреднения
-	if (Kosh.BufferAvg >= 8) {
-		uint16_t RPM = Kosh.BufferSumRPM >> 3;
+	if (Kosh.BufferAvg >= 4) {
+		uint16_t RPM = Kosh.BufferSumRPM >> 2;
 		Kosh.BufferRPM[Kosh.BufferIndex] = RPM;
-		uint16_t MAP = Kosh.BufferSumMAP >> 3;
+		uint16_t MAP = Kosh.BufferSumMAP >> 2;
 		Kosh.BufferMAP[Kosh.BufferIndex] = MAP;
 
 		Kosh.BufferAvg = 0;
