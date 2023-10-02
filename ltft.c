@@ -39,10 +39,8 @@
 
 // Режим отладки
 //#define DEBUG_MODE
-// Раскомментировать для включения кольцевого буфера
-#define KOSH_CIRCULAR_BUFFER_ENABLE
 // Размер буфера
-#define KOSH_CBS 18
+#define KOSH_CBS 20
 
 // =============================================================================
 // ============ Костыль для коррекции ячеек с помощью интерполяции =============
@@ -50,7 +48,7 @@
 
 // Вытащил эти макросы из funconv.c
 #define secu3_offsetof(type,member)   ((size_t)(&((type *)0)->member))
-#define _GWU12(x,i,j) (d.mm_ptr12(secu3_offsetof(struct f_data_t, x), (i*16+j) )) //note: hard coded size of array
+#define _GWU12(x,i,j) (d.mm_ptr12(secu3_offsetof(struct f_data_t, x), (i*16+j) ))
 
 // Структура для хранения переменных
 typedef struct {
@@ -75,6 +73,7 @@ typedef struct {
 	uint8_t BufferAvg;				// Текущая позиция усреднения
 	uint32_t BufferSumRPM;			// Переменная для суммирования оборотов
 	uint32_t BufferSumMAP;			// Переменная для суммирования давления
+	int16_t StepMAP;      			// Шаг сетки давления при использовании двух значений
 } Kosh_t;
 
 // Инициализация структуры
@@ -100,8 +99,8 @@ Kosh_t Kosh = {
 				.BufferAvg = 0,
 				.BufferSumRPM = 0,
 				.BufferSumMAP = 0,
+				.StepMAP = 0
 			};
-
 
 // PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[fcs.ta_i])
 // Порядок нумерации ячеек в массивах
@@ -109,7 +108,7 @@ Kosh_t Kosh = {
 //	0  3
 
 // Расчет коррекции 
-void kosh_ltft_control(void) {
+void kosh_ltft_control(uint8_t Channel) {
 	#ifdef DEBUG_MODE
 		// Обороты, давление и лямбда коррекция
 		// для отладки будут браться из VE
@@ -118,7 +117,7 @@ void kosh_ltft_control(void) {
 		// Давление VE * 4
 		Kosh.MAP = _GWU12(inj_ve2, 14, 1) << 2;
 		// Лямбда коррекция
-		d.corr.lambda[0] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
+		d.corr.lambda[Channel] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
 
 		for (uint8_t i = 0; i < 16; ++i) {
 			d.inj_ltft2[0][i] = PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i]);
@@ -128,15 +127,28 @@ void kosh_ltft_control(void) {
 		}
 	#else
 		// Уходим, пока не накопится коррекция
-		if (d.corr.lambda[0] > -3 && d.corr.lambda[0] < 3) {return;}
+		if (d.corr.lambda[Channel] > -3 && d.corr.lambda[Channel] < 3) {return;}
 
-		#ifdef KOSH_CIRCULAR_BUFFER_ENABLE
-			kosh_rpm_map_calc();
-		#else
-			Kosh.RPM = d.sens.frequen;
-			Kosh.MAP = d.sens.map;
-		#endif
+		// Находим целевые обороты и давления с учетом задержки
+		kosh_rpm_map_calc();
 	#endif
+
+	// Пороги по оборотам и давлению (в основном для ХХ)
+	if (Kosh.RPM < 1100 && Kosh.MAP < 35) {return;}
+
+	// Флаг использовать сетку давления
+	uint8_t use_grid = CHECKBIT(d.param.func_flags, FUNC_LDAX_GRID);
+	if (!use_grid) {
+		Kosh.StepMAP = (d.param.load_upper - d.param.load_lower) / 15;
+	}
+	else {
+		Kosh.StepMAP = 0;
+	}
+
+	/*
+	Kosh.StepMAP ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]) : (Kosh.StepMAP * Kosh.y1 + d.param.load_lower),
+	Kosh.StepMAP ? PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]) : (Kosh.StepMAP),
+	*/
 
 	// Коэффициент выравнивания будет пока храниться в таблице VE2
 	// в левом верхнем углу, x2048 -> x64
@@ -160,10 +172,18 @@ void kosh_ltft_control(void) {
 	Kosh.StartVE[3] = _GWU12(inj_ve, Kosh.y1, Kosh.x2);
 	
 	// Вычисление значений с учетом имеющейся коррекции LTFT
-	Kosh.LTFTVE[0] = ((uint32_t) Kosh.StartVE[0] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x1])) >> 9;
-	Kosh.LTFTVE[1] = ((uint32_t) Kosh.StartVE[1] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x1])) >> 9;
-	Kosh.LTFTVE[2] = ((uint32_t) Kosh.StartVE[2] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x2])) >> 9;
-	Kosh.LTFTVE[3] = ((uint32_t) Kosh.StartVE[3] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x2])) >> 9;
+	if (Channel) {
+		Kosh.LTFTVE[0] = ((uint32_t) Kosh.StartVE[0] * (512 + d.inj_ltft2[Kosh.y1][Kosh.x1])) >> 9;
+		Kosh.LTFTVE[1] = ((uint32_t) Kosh.StartVE[1] * (512 + d.inj_ltft2[Kosh.y2][Kosh.x1])) >> 9;
+		Kosh.LTFTVE[2] = ((uint32_t) Kosh.StartVE[2] * (512 + d.inj_ltft2[Kosh.y2][Kosh.x2])) >> 9;
+		Kosh.LTFTVE[3] = ((uint32_t) Kosh.StartVE[3] * (512 + d.inj_ltft2[Kosh.y1][Kosh.x2])) >> 9;
+	}
+	else {
+		Kosh.LTFTVE[0] = ((uint32_t) Kosh.StartVE[0] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x1])) >> 9;
+		Kosh.LTFTVE[1] = ((uint32_t) Kosh.StartVE[1] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x1])) >> 9;
+		Kosh.LTFTVE[2] = ((uint32_t) Kosh.StartVE[2] * (512 + d.inj_ltft1[Kosh.y2][Kosh.x2])) >> 9;
+		Kosh.LTFTVE[3] = ((uint32_t) Kosh.StartVE[3] * (512 + d.inj_ltft1[Kosh.y1][Kosh.x2])) >> 9;
+	}
 
 	// Расчет веса точек в коррекции
 	kosh_points_weight();
@@ -180,7 +200,7 @@ void kosh_ltft_control(void) {
 								1);
 
 	// Целевое VE 
-	Kosh.TargetVe = ((uint32_t) Kosh.CalcVE * (512 + d.corr.lambda[0])) >> 9;
+	Kosh.TargetVe = ((uint32_t) Kosh.CalcVE * (512 + d.corr.lambda[Channel])) >> 9;
 	Kosh.TargetVe += 1;
 
 	// Расчет добавки для выравнивания ячеек
@@ -200,7 +220,7 @@ void kosh_ltft_control(void) {
 	}
 
 	// Расчет добавки по лямбде
-	kosh_add_ve_calculate();
+	kosh_add_ve_calculate(Channel);
 
 	// Итого мы имеем два массива значений VEAlignment и AddVE,
 	// которые необходимо добавить к VE.
@@ -214,14 +234,13 @@ void kosh_ltft_control(void) {
 		Kosh.LTFTAdd[i] = (int32_t) (Kosh.VEAlignment[i] + Kosh.AddVE[i]) * 512 / Kosh.StartVE[i];
 	}
 
-	kosh_write_value(Kosh.y1, Kosh.x1, 0);
-	kosh_write_value(Kosh.y2, Kosh.x1, 1);
-	kosh_write_value(Kosh.y2, Kosh.x2, 2);
-	kosh_write_value(Kosh.y1, Kosh.x2, 3);
+	kosh_write_value(Kosh.y1, Kosh.x1, 0, Channel);
+	kosh_write_value(Kosh.y2, Kosh.x1, 1, Channel);
+	kosh_write_value(Kosh.y2, Kosh.x2, 2, Channel);
+	kosh_write_value(Kosh.y1, Kosh.x2, 3, Channel);
 
 	// Обнуление лямбда коррекции
-	d.corr.lambda[0] = 0;
-	d.corr.lambda[1] = 0;
+	d.corr.lambda[Channel] = 0;
 
 	// Вывод для отладки
 	#ifdef DEBUG_MODE
@@ -236,20 +255,18 @@ void kosh_ltft_control(void) {
 	#endif
 }
 
-void kosh_write_value(uint8_t y, uint8_t x, uint8_t n) {
-	// Ограничение значения коррекции -14...+15  % (0.15 * 512 = 77)
-	int16_t Value = d.inj_ltft1[y][x];
+void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
+	// Ограничение значения коррекции
+	int16_t Value = Channel ? d.inj_ltft2[y][x] : d.inj_ltft1[y][x];
+	int8_t Min = PGM_GET_BYTE(&fw_data.exdata.ltft_min);
+	int8_t Max = PGM_GET_BYTE(&fw_data.exdata.ltft_max);
 
-	if (Value + Kosh.LTFTAdd[n] > 77) {
-		Kosh.LTFTAdd[n] = 77 - Value;
-	}
-	else if (Value + Kosh.LTFTAdd[n] < -72) {
-		Kosh.LTFTAdd[n] = -72 - Value;
-	}
+	if (Value + Kosh.LTFTAdd[n] > Max) {Kosh.LTFTAdd[n] = Max - Value;}
+	else if (Value + Kosh.LTFTAdd[n] < Min) {Kosh.LTFTAdd[n] = Min - Value;}
 
 	// Добавляем коррекцию в таблицу LTFT (Давление / Обороты)
-	d.inj_ltft1[y][x] += Kosh.LTFTAdd[n];
-	//d.inj_ltft1[y][x] = 50;
+	if (Channel) {d.inj_ltft2[y][x] += Kosh.LTFTAdd[n];}
+	else 		 {d.inj_ltft1[y][x] += Kosh.LTFTAdd[n];}
 }
 
 // Поиск задействованных ячеек в расчете	
@@ -325,18 +342,18 @@ void kosh_points_weight(void) {
 }
 
 // Расчет добавки к VE
-void kosh_add_ve_calculate(void) {
+void kosh_add_ve_calculate(uint8_t Channel) {
 	// Значение ячейки VE * Коррекцию * Долю
 	uint16_t G[4] = {0, 0, 0, 0};
 	uint16_t SummDelta = 0;
 
 	// Если сдвигать биты с отрицательными числами, это может плохо закончиться.
-	// Потому d.corr.lambda[0] временно делаем положительным.
+	// Потому d.corr.lambda[Channel] временно делаем положительным.
 	int8_t Ng = 1;
-	if (d.corr.lambda[0] < 0) {Ng = -1;}
+	if (d.corr.lambda[Channel] < 0) {Ng = -1;}
 
 	for (uint8_t i = 0; i < 4; ++i) {
-		G[i] = ((int32_t) Kosh.LTFTVE[i] * d.corr.lambda[0] * Ng) >> 9;
+		G[i] = ((int32_t) Kosh.LTFTVE[i] * d.corr.lambda[Channel] * Ng) >> 9;
 		G[i] = ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
 		// Сумма отклонения
 		SummDelta += ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
@@ -424,157 +441,38 @@ void kosh_circular_buffer_update(void) {
 // =============================================================================
 // =============================================================================
 
-/**Describes data for each LTFT channel*/
-typedef struct {
-	uint8_t ltft_state;  //!< SM state
-	uint16_t stat_tmr;   //!< timer
-	uint8_t ltft_idx_r;  //!< rpm index of current work point
-	uint8_t ltft_idx_l;  //!< load index of current work point
-	int16_t ltft_corr;   //!< value of actual correction
-	uint8_t idx_l;       //!< index for iteration throught load axis
-	uint8_t idx_r;       //!< index for iteration throught rpm axis
-	uint8_t strokes;     //!< counter of eng. strokes
-} ltft_t;
-
-ltft_t ltft[2] = {{0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0}};
-
 void ltft_control(void) {
 	#ifdef DEBUG_MODE
-		kosh_ltft_control();
+		kosh_ltft_control(0);
 	#endif
 
+	// Условия выхода из функции:
+	// 1 - Идет процесс записи в EEPROM
 	uint8_t ee_opcode = eeprom_get_pending_opcode();
-	if (ee_opcode == OPCODE_RESET_LTFT || ee_opcode == OPCODE_SAVE_LTFT)
-		return; //do not write to LTFT map during saving to EEPROM
-
-	if (d.sens.temperat < ((int16_t)PGM_GET_WORD(&fw_data.exdata.ltft_learn_clt)))
-		return; //CLT is too low for learning
+	if (ee_opcode == OPCODE_RESET_LTFT || ee_opcode == OPCODE_SAVE_LTFT) {return;}
+	// 2 - Температура ОЖ ниже порога
+	if (d.sens.temperat < ((int16_t)PGM_GET_WORD(&fw_data.exdata.ltft_learn_clt))) {return;}
 
 	#ifndef SECU3T
-		if (d.sens.map2 < PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpa))
-			return; //gas pressure is below threshold
-
-		if (PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpd) && ((d.sens.map2 - d.sens.map) < PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpd)))
-			return; //differential gas pressure is below threshold
+		// 3 - Давление газа ниже порога
+		if (d.sens.map2 < PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpa)) {return;}
+		// 4 - Дифференциальное давление газа ниже порога
+		if (PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpd) && ((d.sens.map2 - d.sens.map) < PGM_GET_WORD(&fw_data.exdata.ltft_learn_gpd))) {return;}
 	#endif
 
-	if (!ltft_is_active())
-		return; //LTFT functionality turned off or not active for current fuel
-
-	if (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR))
-		return; //Lambda correction is disabled on idling
-
-	if (!d.sens.carb && !PGM_GET_BYTE(&fw_data.exdata.ltft_on_idling))
-		return; //LTFT updating on idling is disabled
+	// 5 - Адаптация выключена для текущего топлива
+	if (!ltft_is_active()) {return;}
+	// 6 - Лямбда коррекция отключена
+	if (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR)) {return;}
+	// 7 - Адаптация выключена на ХХ
+	if (!d.sens.carb && !PGM_GET_BYTE(&fw_data.exdata.ltft_on_idling)) {return;}
 
 	uint8_t chnum = (0x00!=d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
 	uint8_t chbeg = (0xFF==d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
 
 	for (uint8_t i = chbeg; i < chnum; ++i) {
-		//do learning:
-		switch(ltft[i].ltft_state) {
-	   		case 0:
-			{ //wait for work point to enter restricted band around a cell
-				uint8_t r = ltft_check_rpm_hit();
-				uint8_t l = ltft_check_load_hit();
-				if (r != 255 && l != 255) {
-					lambda_reset_swt_counter(i);
-					ltft[i].stat_tmr = s_timer_gtc();
-					ltft[i].strokes = 0;
-					ltft[i].ltft_state++;
-				}
-				else
-					break;
-			}
-
-			case 1:
-			{
-				uint8_t r = ltft_check_rpm_hit();
-				uint8_t l = ltft_check_load_hit();
-				if (r == 255 || l == 255) { //work point came out restricted band - reset SM state
-					ltft[i].ltft_state = 0;
-					break;
-				}
-
-				uint8_t stab_time_ready = 0;
-
-				if (0==PGM_GET_BYTE(&fw_data.exdata.ltft_stab_str))
-					stab_time_ready = ((s_timer_gtc() - ltft[i].stat_tmr) >= PGM_GET_BYTE(&fw_data.exdata.ltft_stab_time)); //use time
-				else
-					stab_time_ready = ltft[i].strokes >= PGM_GET_BYTE(&fw_data.exdata.ltft_stab_str); //use eng. strokes
-
-				if (stab_time_ready && lambda_get_swt_counter(i) >= PGM_GET_BYTE(&fw_data.exdata.ltft_sigswt_num)) {
-
-					/*	
-					// Текущее значение в таблице LTFT
-					int16_t ltft_curr = i ? d.inj_ltft2[l][r] : d.inj_ltft1[l][r];
-					// Новое значение
-					int16_t new_val = ltft_curr + d.corr.lambda[i];
-					// Ограничение нового значения
-					restrict_value_to(&new_val, (int16_t)PGM_GET_BYTE(&fw_data.exdata.ltft_min), (int16_t)PGM_GET_BYTE(&fw_data.exdata.ltft_max));
-					
-					// Запись нового значения в таблицу
-					if (i)
-						d.inj_ltft2[l][r] = new_val;     // apply correction to current cell of LTFT 2
-					else
-						d.inj_ltft1[l][r] = new_val;     // apply correction to current cell of LTFT 1
-
-					// Обновление значения текущей коррекции
-					ltft[i].ltft_corr = new_val - ltft_curr;
-
-					// Уменьшение ламбда корреции
-					d.corr.lambda[i]-=ltft[i].ltft_corr;       // reduce current lambda by actual value of correction (taking into account possible min/max restriction)
-					// Координаты скорректированной ячейки
-					ltft[i].ltft_idx_r = r, ltft[i].ltft_idx_l = l; // remember indexes of current work point
-
-					// Обнуление индексов циклов
-					ltft[i].idx_l = 0, ltft[i].idx_r = 0;
-
-					// Переход к следующему шагу
-					ltft[i].ltft_state++;
-					*/
-
-					// Переход к моей функции
-					kosh_ltft_control();
-
-					// Сброс состояния
-					ltft[i].ltft_state = 0;
-				}
-				else {
-					break;
-				}
-			}
-
-			case 2: //perform correction of neighbour cells
-			{
-				uint8_t r = PGM_GET_BYTE(&fw_data.exdata.ltft_neigh_rad);
-				uint8_t idx_l = ltft[i].idx_l, idx_r = ltft[i].idx_r;
-				if ((abs8((int8_t)idx_r - ltft[i].ltft_idx_r) <= r) && (abs8((int8_t)idx_l - ltft[i].ltft_idx_l) <= r)) { //skip cells which lay out of radius
-
-					if (ltft[i].ltft_idx_r != idx_r || ltft[i].ltft_idx_l != idx_l) { //skip already corrected (current) cell
-						int8_t dist_l = abs(ltft[i].ltft_idx_l - idx_l);
-						int8_t dist_r = abs(ltft[i].ltft_idx_r - idx_r);
-						int8_t dist = (dist_l > dist_r) ? dist_l : dist_r; //find maximum distance
-						int16_t new_val = ((int16_t)(i ? d.inj_ltft2[idx_l][idx_r] : d.inj_ltft1[idx_l][idx_r])) + (((((int32_t)ltft[i].ltft_corr) * PGM_GET_BYTE(&fw_data.exdata.ltft_learn_grad)) >> 8) / dist);
-						restrict_value_to(&new_val, (int16_t)PGM_GET_BYTE(&fw_data.exdata.ltft_min), (int16_t)PGM_GET_BYTE(&fw_data.exdata.ltft_max));
-						
-						if (i)
-							d.inj_ltft2[idx_l][idx_r] = new_val;
-						else
-							d.inj_ltft1[idx_l][idx_r] = new_val;
-					}
-				}
-
-				ltft[i].idx_r++;
-				if (ltft[i].idx_r == INJ_VE_POINTS_F) {
-					ltft[i].idx_r = 0;
-					ltft[i].idx_l++;
-				
-					if (ltft[i].idx_l == INJ_VE_POINTS_L)
-						ltft[i].ltft_state = 0; //all 256 cells updated, finish
-				}
-			}
-		}
+		// Переход к моей функции
+		kosh_ltft_control(i);
 	}
 }
 
@@ -594,12 +492,7 @@ uint8_t ltft_is_active(void) {
 }
 
 void ltft_stroke_event_notification(void) {
-	++ltft[0].strokes;
-	++ltft[1].strokes;
-
-	#ifdef KOSH_CIRCULAR_BUFFER_ENABLE
-		kosh_circular_buffer_update();
-	#endif
+	kosh_circular_buffer_update();
 }
 
 // FUEL_INJECT

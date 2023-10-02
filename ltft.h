@@ -34,11 +34,11 @@
 		void ltft_control(void);
 
 		// ====================================================
-		void kosh_ltft_control(void);
-		void kosh_write_value(uint8_t y, uint8_t x, uint8_t n);
+		void kosh_ltft_control(uint8_t Channel);
+		void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel);
 		void kosh_find_cells(void);
 		void kosh_points_weight(void);
-		void kosh_add_ve_calculate(void);
+		void kosh_add_ve_calculate(uint8_t Channel);
 		void kosh_rpm_map_calc(void);
 		void kosh_circular_buffer_update(void);
 		// ====================================================
