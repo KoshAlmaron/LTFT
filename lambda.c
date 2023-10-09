@@ -37,9 +37,9 @@
 #include "vstimer.h"
 
 // Время задержки после обогащения ускорения
-#define EGO_AC_DELAY 65
+#define EGO_AC_DELAY 90
 // Время задержки после отключения топлива
-#define EGO_FC_DELAY 200
+#define EGO_FC_DELAY 250
 
 /**Internal state variables*/
 typedef struct

@@ -40,7 +40,7 @@
 // Режим отладки
 //#define DEBUG_MODE
 // Размер буфера
-#define KOSH_CBS 20
+#define KOSH_CBS 40
 
 // =============================================================================
 // ============ Костыль для коррекции ячеек с помощью интерполяции =============
@@ -73,6 +73,7 @@ typedef struct {
 	uint8_t BufferAvg;				// Текущая позиция усреднения
 	uint32_t BufferSumRPM;			// Переменная для суммирования оборотов
 	uint32_t BufferSumMAP;			// Переменная для суммирования давления
+	uint8_t UseGrid;				// Использовать сетку давления
 	int16_t StepMAP;      			// Шаг сетки давления при использовании двух значений
 } Kosh_t;
 
@@ -99,10 +100,10 @@ Kosh_t Kosh = {
 				.BufferAvg = 0,
 				.BufferSumRPM = 0,
 				.BufferSumMAP = 0,
+				.UseGrid = 0,
 				.StepMAP = 0
 			};
 
-// PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[fcs.ta_i])
 // Порядок нумерации ячеек в массивах
 //	1  2
 //	0  3
@@ -127,32 +128,21 @@ void kosh_ltft_control(uint8_t Channel) {
 		}
 	#else
 		// Уходим, пока не накопится коррекция
-		if (d.corr.lambda[Channel] > -3 && d.corr.lambda[Channel] < 3) {return;}
+		if (d.corr.lambda[Channel] > -2 && d.corr.lambda[Channel] < 2) {return;}
 
 		// Находим целевые обороты и давления с учетом задержки
 		kosh_rpm_map_calc();
 	#endif
 
 	// Пороги по оборотам и давлению (в основном для ХХ)
-	if (Kosh.RPM < 1100 && Kosh.MAP < 35) {return;}
+	//if (Kosh.RPM < 1100 && Kosh.MAP < 35) {return;}
 
 	// Флаг использовать сетку давления
-	uint8_t use_grid = CHECKBIT(d.param.func_flags, FUNC_LDAX_GRID);
-	if (!use_grid) {
-		Kosh.StepMAP = (d.param.load_upper - d.param.load_lower) / 15;
-	}
-	else {
-		Kosh.StepMAP = 0;
-	}
+	Kosh.UseGrid = CHECKBIT(d.param.func_flags, FUNC_LDAX_GRID);
+	if (!Kosh.UseGrid) {Kosh.StepMAP = (d.param.load_upper - d.param.load_lower) / 15;}
 
-	/*
-	Kosh.StepMAP ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]) : (Kosh.StepMAP * Kosh.y1 + d.param.load_lower),
-	Kosh.StepMAP ? PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]) : (Kosh.StepMAP),
-	*/
-
-	// Коэффициент выравнивания будет пока храниться в таблице VE2
-	// в левом верхнем углу, x2048 -> x64
-	Kosh.Kf = _GWU12(inj_ve2, 15, 0) >> 5;
+	// Коэффициент выравнивания x64
+	Kosh.Kf = 20;
 
 	// Поиск задействованных ячеек в расчете
 	kosh_find_cells();
@@ -189,15 +179,15 @@ void kosh_ltft_control(uint8_t Channel) {
 	kosh_points_weight();
 
 	Kosh.CalcVE = bilinear_interpolation(Kosh.RPM, Kosh.MAP,
-								Kosh.LTFTVE[0],
-								Kosh.LTFTVE[1],
-								Kosh.LTFTVE[2], 
-								Kosh.LTFTVE[3],
-								PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]),
-								PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]),
-								PGM_GET_WORD(&fw_data.exdata.rpm_grid_sizes[Kosh.x1]),
-								PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]),
-								1);
+					Kosh.LTFTVE[0],
+					Kosh.LTFTVE[1],
+					Kosh.LTFTVE[2],
+					Kosh.LTFTVE[3],
+					PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]),
+					Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]) : (Kosh.StepMAP * Kosh.y1 + d.param.load_lower),
+					PGM_GET_WORD(&fw_data.exdata.rpm_grid_sizes[Kosh.x1]),
+					Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]) : (Kosh.StepMAP),
+					1);
 
 	// Целевое VE 
 	Kosh.TargetVe = ((uint32_t) Kosh.CalcVE * (512 + d.corr.lambda[Channel])) >> 9;
@@ -206,7 +196,7 @@ void kosh_ltft_control(uint8_t Channel) {
 	// Расчет добавки для выравнивания ячеек
 	int8_t Ng = 1;
 	for (uint8_t i = 0; i < 4; ++i) {
-		// Тут может быть орицательное цисло, и сдвигать биты в этом случае -
+		// Тут может быть отрицательное число, а сдвигать биты в этом случае
 		// это плохая идея, потому минус добавляем в конце.
 		Ng = 1;
 		Kosh.VEAlignment[i] = Kosh.TargetVe - Kosh.LTFTVE[i];
@@ -232,8 +222,27 @@ void kosh_ltft_control(uint8_t Channel) {
 	// Расчет добавочного коэффициента LTFT
 	for (uint8_t i = 0; i < 4; ++i) {
 		Kosh.LTFTAdd[i] = (int32_t) (Kosh.VEAlignment[i] + Kosh.AddVE[i]) * 512 / Kosh.StartVE[i];
+
+		// Вывод для отладки
+		#ifdef DEBUG_MODE
+			d.inj_ltft1[13][i] = Kosh.LTFTAdd[i];
+		#endif
 	}
 
+	// Так как я не могу выявить баг в вычислениях, буду просто проверять результат.
+	// Добавка должна быть в туже сторону, что и лямбда коррекция
+	// и не превышать более чем в 2 раза.
+	// Обнаруженные кривые значения будут записываться в вторую таблицу LTFT,
+	// чтобы потом можно было проанализировать.
+	uint8_t TestResult = 0;
+	TestResult += kosh_test_value(Kosh.y1, Kosh.x1, 0, Channel);
+	TestResult += kosh_test_value(Kosh.y2, Kosh.x1, 1, Channel);
+	TestResult += kosh_test_value(Kosh.y2, Kosh.x2, 2, Channel);
+	TestResult += kosh_test_value(Kosh.y1, Kosh.x2, 3, Channel);
+
+	if (TestResult > 0) {return;}
+
+	// Запись значений в таблицу LTFT
 	kosh_write_value(Kosh.y1, Kosh.x1, 0, Channel);
 	kosh_write_value(Kosh.y2, Kosh.x1, 1, Channel);
 	kosh_write_value(Kosh.y2, Kosh.x2, 2, Channel);
@@ -247,22 +256,54 @@ void kosh_ltft_control(uint8_t Channel) {
 		for (uint8_t i = 0; i < 4; ++i) {
 			d.inj_ltft1[15][i] = Kosh.VEAlignment[i] / 4;
 			d.inj_ltft1[14][i] = Kosh.AddVE[i] / 4;
-			d.inj_ltft1[13][i] = Kosh.LTFTAdd[i];
-			d.inj_ltft1[12][i] = ((int32_t) Kosh.CellsProp[i] * 512 / 10) >> 11;
+			d.inj_ltft1[12][i] = Kosh.LTFTAdd[i];
+			d.inj_ltft1[11][i] = ((int32_t) Kosh.CellsProp[i] * 512 / 10) >> 11;
 		}
 		d.inj_ltft1[15][6] = (float) Kosh.CalcVE  * 0.025;
 		d.inj_ltft1[14][6] = (float) Kosh.TargetVe  * 0.025;
+
+		d.inj_ltft1[15][8] = PGM_GET_BYTE(&fw_data.exdata.ltft_max);
+		d.inj_ltft1[14][8] = PGM_GET_BYTE(&fw_data.exdata.ltft_min);
 	#endif
 }
 
-void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
+// Проверка значения перед записью
+uint8_t kosh_test_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
 	// Ограничение значения коррекции
-	int16_t Value = Channel ? d.inj_ltft2[y][x] : d.inj_ltft1[y][x];
+	int8_t Value = Channel ? d.inj_ltft2[y][x] : d.inj_ltft1[y][x];
 	int8_t Min = PGM_GET_BYTE(&fw_data.exdata.ltft_min);
 	int8_t Max = PGM_GET_BYTE(&fw_data.exdata.ltft_max);
 
 	if (Value + Kosh.LTFTAdd[n] > Max) {Kosh.LTFTAdd[n] = Max - Value;}
 	else if (Value + Kosh.LTFTAdd[n] < Min) {Kosh.LTFTAdd[n] = Min - Value;}
+
+	// Проверка значений на корректность
+	if (Kosh.LTFTAdd[n] < 0 && d.corr.lambda[Channel] > 0) {
+		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
+		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
+		return 1;
+	}
+	if (Kosh.LTFTAdd[n] > 0 && d.corr.lambda[Channel] < 0) {
+		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
+		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
+		return 1;
+	}
+	if (abs(Kosh.LTFTAdd[n]) > (abs(d.corr.lambda[Channel]) * 2)) {
+		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
+		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
+		return 1;
+	}
+	return 0;
+}
+
+void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
+	// // Ограничение значения коррекции
+	// int8_t Value = Channel ? d.inj_ltft2[y][x] : d.inj_ltft1[y][x];
+	// int8_t Min = PGM_GET_BYTE(&fw_data.exdata.ltft_min);
+	// int8_t Max = PGM_GET_BYTE(&fw_data.exdata.ltft_max);
+
+	// if (Value + Kosh.LTFTAdd[n] > Max) {Kosh.LTFTAdd[n] = Max - Value;}
+	// else if (Value + Kosh.LTFTAdd[n] < Min) {Kosh.LTFTAdd[n] = Min - Value;}
 
 	// Добавляем коррекцию в таблицу LTFT (Давление / Обороты)
 	if (Channel) {d.inj_ltft2[y][x] += Kosh.LTFTAdd[n];}
@@ -273,7 +314,7 @@ void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
 void kosh_find_cells(void) {
 	// Чтобы убрать здесь и дальше исключительные ситуации,
 	// когда обороты меньше сетки или попали точно в сетку и т.п.,
-	// буду просто добавлять или отнимать единицу
+	// буду просто добавлять или отнимать единицу.
 
 	// Обороты
 	if (Kosh.RPM <= PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[0])) {
@@ -295,16 +336,16 @@ void kosh_find_cells(void) {
 	}
 
 	// Давление
-	if (Kosh.MAP <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[0])) {
-		Kosh.MAP = PGM_GET_WORD(&fw_data.exdata.load_grid_points[0]) + 1;
+	if (Kosh.MAP <= (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[0]) : (d.param.load_lower))) {
+		Kosh.MAP = Kosh.UseGrid ? (PGM_GET_WORD(&fw_data.exdata.load_grid_points[0]) + 1) : (d.param.load_lower + 1);
 	}
-	if (Kosh.MAP >= PGM_GET_WORD(&fw_data.exdata.load_grid_points[15])) {
-		Kosh.MAP = PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) - 1;
+	if (Kosh.MAP >= (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) : (Kosh.StepMAP * 15 + d.param.load_lower))) {
+		Kosh.MAP = Kosh.UseGrid ? (PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) - 1) : (Kosh.StepMAP * 15 + d.param.load_lower - 1);
 	}
 
 	for (uint8_t i = 1; i < 16; i++) {
-		if (Kosh.MAP <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
-			if (Kosh.MAP == PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+		if (Kosh.MAP <= (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[i]) : (Kosh.StepMAP * i + d.param.load_lower))) {
+			if (Kosh.MAP == (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[i]) : (Kosh.StepMAP * i + d.param.load_lower))) {
 				Kosh.MAP -= 1;
 			}
 			Kosh.y1 = i - 1;
@@ -318,8 +359,8 @@ void kosh_find_cells(void) {
 void kosh_points_weight(void) {
 	uint16_t x1 = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]);
 	uint16_t x2 = PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x2]);
-	uint16_t y1 = PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]);
-	uint16_t y2 = PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y2]);
+	uint16_t y1 = Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]) : (Kosh.StepMAP * Kosh.y1 + d.param.load_lower);
+	uint16_t y2 = Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y2]) : (Kosh.StepMAP * Kosh.y2 + d.param.load_lower);
 
 	uint16_t x = Kosh.RPM;
 	uint16_t y = Kosh.MAP;
@@ -350,10 +391,15 @@ void kosh_add_ve_calculate(uint8_t Channel) {
 	// Если сдвигать биты с отрицательными числами, это может плохо закончиться.
 	// Потому d.corr.lambda[Channel] временно делаем положительным.
 	int8_t Ng = 1;
-	if (d.corr.lambda[Channel] < 0) {Ng = -1;}
+	int16_t Lambda = d.corr.lambda[Channel];
+
+	if (Lambda < 0) {
+		Ng = -1;
+		Lambda *= Ng;
+	}
 
 	for (uint8_t i = 0; i < 4; ++i) {
-		G[i] = ((int32_t) Kosh.LTFTVE[i] * d.corr.lambda[Channel] * Ng) >> 9;
+		G[i] = ((uint32_t) Kosh.LTFTVE[i] * Lambda) >> 9;
 		G[i] = ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
 		// Сумма отклонения
 		SummDelta += ((uint32_t) G[i] * Kosh.CellsProp[i]) >> 11;
@@ -365,13 +411,14 @@ void kosh_add_ve_calculate(uint8_t Channel) {
 									Kosh.LTFTVE[2] + Kosh.VEAlignment[2],
 									Kosh.LTFTVE[3] + Kosh.VEAlignment[3],
 									PGM_GET_WORD(&fw_data.exdata.rpm_grid_points[Kosh.x1]),
-									PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]),
+									Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[Kosh.y1]) : (Kosh.StepMAP * Kosh.y1 + d.param.load_lower),
 									PGM_GET_WORD(&fw_data.exdata.rpm_grid_sizes[Kosh.x1]),
-									PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]),
+									Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_sizes[Kosh.y1]) : (Kosh.StepMAP),
 									1);
 
 	// Коэффициент отклонения от цели
-	uint16_t Cf = (int32_t) abs(Kosh.TargetVe - CalcVE2) * 1024 / SummDelta;
+	uint16_t Cf = abs(Kosh.TargetVe - CalcVE2);
+	Cf = (uint32_t) Cf * 1024 / SummDelta;
 
 	// Добавка к VE
 	for (uint8_t i = 0; i < 4; ++i) {
@@ -391,12 +438,12 @@ void kosh_rpm_map_calc(void) {
 	}
 
   	MAPAVG = MAPAVG >> 3;
-  	if (MAPAVG > PGM_GET_WORD(&fw_data.exdata.load_grid_points[15])) {
-  		MAPAVG = PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]);
+  	if (MAPAVG > (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) : (Kosh.StepMAP * 15 + d.param.load_lower))) {
+  		MAPAVG = Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[15]) : (Kosh.StepMAP * 15 + d.param.load_lower);
   	}
   	// Находим задержку из сетки
   	for (uint8_t i = 0; i < 16; i++) {
-  		if (MAPAVG <= PGM_GET_WORD(&fw_data.exdata.load_grid_points[i])) {
+  		if (MAPAVG <= (Kosh.UseGrid ? PGM_GET_WORD(&fw_data.exdata.load_grid_points[i]) : (Kosh.StepMAP * i + d.param.load_lower))) {
 
   			// Значения лага хранятся в таблице "Такты ОПП (газ)"
   			int8_t Index = (PGM_GET_BYTE(&fw_data.exdata.inj_aftstr_strk1[i])) >> 2;
@@ -444,6 +491,7 @@ void kosh_circular_buffer_update(void) {
 void ltft_control(void) {
 	#ifdef DEBUG_MODE
 		kosh_ltft_control(0);
+		kosh_ltft_control(1);
 	#endif
 
 	// Условия выхода из функции:
@@ -467,13 +515,14 @@ void ltft_control(void) {
 	// 7 - Адаптация выключена на ХХ
 	if (!d.sens.carb && !PGM_GET_BYTE(&fw_data.exdata.ltft_on_idling)) {return;}
 
-	uint8_t chnum = (0x00!=d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
-	uint8_t chbeg = (0xFF==d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
+	//uint8_t chnum = (0x00!=d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
+	//uint8_t chbeg = (0xFF==d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
 
-	for (uint8_t i = chbeg; i < chnum; ++i) {
-		// Переход к моей функции
-		kosh_ltft_control(i);
-	}
+	kosh_ltft_control(0);
+	// for (uint8_t i = chbeg; i < chnum; ++i) {
+	// 	// Переход к моей функции
+	// 	kosh_ltft_control(i);
+	// }
 }
 
 uint8_t ltft_is_active(void) {
