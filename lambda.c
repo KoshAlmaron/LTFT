@@ -42,58 +42,54 @@
 #define EGO_FC_DELAY 250
 
 /**Internal state variables*/
-typedef struct
-{
- uint8_t stroke_counter[2];      //!< Used to count strokes for correction integration
- uint16_t lambda_t1;             //!< timer
- uint16_t lambda_t2[2];          //!< timer for ms per step
- uint8_t enabled[2];             //!< Flag indicates that lambda correction is enabled by timeout
- uint8_t fc_delay[2];            //!< delay in strokes before lambda correction will be turned on after fuel cut off
- uint8_t gasv_prev[2];           //!< previous value of GAS_V input
- uint8_t ms_mask[2];             //!< correction mask (used for ms per step)
- uint8_t last_sign[2];           //!< 0 - below, 1 - above
- uint8_t swt_counter[2];         //!< counter of level switch
-}lambda_state_t;
+typedef struct {
+	uint8_t stroke_counter[2];      //!< Used to count strokes for correction integration
+	uint16_t lambda_t1;             //!< timer
+	uint16_t lambda_t2[2];          //!< timer for ms per step
+	uint8_t enabled[2];             //!< Flag indicates that lambda correction is enabled by timeout
+	uint8_t fc_delay[2];            //!< delay in strokes before lambda correction will be turned on after fuel cut off
+	uint8_t gasv_prev[2];           //!< previous value of GAS_V input
+	uint8_t ms_mask[2];             //!< correction mask (used for ms per step)
+	uint8_t last_sign[2];           //!< 0 - below, 1 - above
+	uint8_t swt_counter[2];         //!< counter of level switch
+} lambda_state_t;
 
 /**Instance of internal state variables structure*/
 static lambda_state_t ego = {{0},0,{0},{0},{0},{0},{0},{0},{0}};
 
-void lambda_control(void)
-{
- if (d.engine_mode == EM_START && d.param.inj_lambda_activ_delay)
- {
-  ego.lambda_t1 = s_timer_gtc();
-  ego.enabled[0] = ego.enabled[1] = 0;
-  d.corr.lambda[0] = d.corr.lambda[1] = 0;
- }
- else
- {
-  if ((s_timer_gtc() - ego.lambda_t1) >= (d.param.inj_lambda_activ_delay*100))
-  {
-   if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_HTGDET))
-   { //deternime oxygen sensor's heating by monitoring voltage.
-    int16_t top_thrd = d.param.inj_lambda_swt_point + d.param.inj_lambda_dead_band;
-    int16_t bot_thrd = ((int16_t)d.param.inj_lambda_swt_point) - d.param.inj_lambda_dead_band;
-    if (bot_thrd < 0)
-     bot_thrd = 0;
+void lambda_control(void) {
+	if (d.engine_mode == EM_START && d.param.inj_lambda_activ_delay) {
+		ego.lambda_t1 = s_timer_gtc();
+		ego.enabled[0] = ego.enabled[1] = 0;
+		d.corr.lambda[0] = d.corr.lambda[1] = 0;
+	}
+	else {
+		if ((s_timer_gtc() - ego.lambda_t1) >= (d.param.inj_lambda_activ_delay * 100)) {
+			//deternime oxygen sensor's heating by monitoring voltage.
+			if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_HTGDET)) {
+				int16_t top_thrd = d.param.inj_lambda_swt_point + d.param.inj_lambda_dead_band;
+				int16_t bot_thrd = ((int16_t)d.param.inj_lambda_swt_point) - d.param.inj_lambda_dead_band;
+				if (bot_thrd < 0) {
+					bot_thrd = 0;
+				}
 
-    if (d.sens.lambda[0] < bot_thrd || d.sens.lambda[0] > top_thrd)
-     ego.enabled[0] = 1;
-
-    if (!CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))
-    {
-     if (d.sens.lambda[1] < bot_thrd || d.sens.lambda[1] > top_thrd)
-      ego.enabled[1] = 1;
-    }
-   }
-   else
-   {
-    ego.enabled[0] = 1;
-    if (!CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))
-     ego.enabled[1] = 1;
-   }
-  }
- }
+				if (d.sens.lambda[0] < bot_thrd || d.sens.lambda[0] > top_thrd) {
+					ego.enabled[0] = 1;
+				}
+				if (!CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN)) {
+					if (d.sens.lambda[1] < bot_thrd || d.sens.lambda[1] > top_thrd) {
+						ego.enabled[1] = 1;
+					}
+				}
+			}
+			else {
+				ego.enabled[0] = 1;
+				if (!CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN)) {
+					ego.enabled[1] = 1;
+				}
+			}
+		}
+	}
 }
 
 /** Process one lambda iteration
@@ -102,307 +98,287 @@ void lambda_control(void)
  * \param inp Input selection: 0 - sensor #1, 1 - sensor #2
  * \return 1,2 - if correction has been updated (- or +), otherwise 0
  */
-static uint8_t lambda_iteration(uint8_t mask, uint8_t inp)
-{
- uint8_t updated = 0;
-////////////////////////////////////////////////////////////////////////////////////////
- if (d.param.inj_lambda_senstype==0)
- { //NBO sensor type
-  //update EGO correction (with deadband)
-  int16_t int_m_thrd = d.param.inj_lambda_swt_point + d.param.inj_lambda_dead_band;
-  int16_t int_p_thrd = ((int16_t)d.param.inj_lambda_swt_point) - d.param.inj_lambda_dead_band;
-  if (int_p_thrd < 0)
-   int_p_thrd = 0;
+static uint8_t lambda_iteration(uint8_t mask, uint8_t inp) {
+	uint8_t updated = 0;
+	////////////////////////////////////////////////////////////////////////////////////////
+	if (d.param.inj_lambda_senstype == 0) { //NBO sensor type
+		//update EGO correction (with deadband)
+		int16_t int_m_thrd = d.param.inj_lambda_swt_point + d.param.inj_lambda_dead_band;
+		int16_t int_p_thrd = ((int16_t)d.param.inj_lambda_swt_point) - d.param.inj_lambda_dead_band;
+		if (int_p_thrd < 0) {int_p_thrd = 0;}
 
-  if (d.sens.lambda[inp] /*d.sens.inst_add_i1*/ > int_m_thrd)
-  {
-   if (1!=mask)
-   {
-    d.corr.lambda[inp]-=d.param.inj_lambda_step_size_m;
-    updated = 1;
-#ifdef FUEL_INJECT
-    //update switch counter
-    if (0 == ego.last_sign[inp])
-     ++ego.swt_counter[inp];
-    ego.last_sign[inp] = 1;
-#endif
-   }
-  }
-  else if (d.sens.lambda[inp] /*d.sens.inst_add_i1*/ < int_p_thrd)
-  {
-   if (2!=mask)
-   {
-    d.corr.lambda[inp]+=d.param.inj_lambda_step_size_p;
-    updated = 2;
-#ifdef FUEL_INJECT
-    //update switch counter
-    if (1 == ego.last_sign[inp])
-     ++ego.swt_counter[inp];
-    ego.last_sign[inp] = 0;
-#endif
-   }
-  }
- }
- else
- { //WBO sensor type (or emulation)
-#if defined(FUEL_INJECT) || defined(GD_CONTROL)
-  int16_t int_m_thrd = d.corr.afr - AFRVAL_MAG(0.05);
-  int16_t int_p_thrd = d.corr.afr + AFRVAL_MAG(0.05);
-#else //CARB_AFR
-  int16_t int_m_thrd = AFRVAL_MAG(14.7) - AFRVAL_MAG(0.05);
-  int16_t int_p_thrd = AFRVAL_MAG(14.7) + AFRVAL_MAG(0.05);
-#endif
-  if (int_m_thrd < 0)
-   int_m_thrd = 0;
+		if (d.sens.lambda[inp] /*d.sens.inst_add_i1*/ > int_m_thrd) {
+			if (1 != mask) {
+				d.corr.lambda[inp] -= d.param.inj_lambda_step_size_m;
+				updated = 1;
+				#ifdef FUEL_INJECT
+					//update switch counter
+					if (0 == ego.last_sign[inp]) {
+						++ego.swt_counter[inp];
+					}
+					ego.last_sign[inp] = 1;
+				#endif
+			}
+		}
+		else if (d.sens.lambda[inp] /*d.sens.inst_add_i1*/ < int_p_thrd) {
+			if (2 != mask) {
+				d.corr.lambda[inp] += d.param.inj_lambda_step_size_p;
+				updated = 2;
+				#ifdef FUEL_INJECT
+					//update switch counter
+					if (1 == ego.last_sign[inp]) {
+						++ego.swt_counter[inp];
+					}
+					ego.last_sign[inp] = 0;
+				#endif
+			}
+		}
+	}
+	else { //WBO sensor type (or emulation)
+		#if defined(FUEL_INJECT) || defined(GD_CONTROL)
+			int16_t int_m_thrd = d.corr.afr - AFRVAL_MAG(0.05);
+			int16_t int_p_thrd = d.corr.afr + AFRVAL_MAG(0.05);
+		#else //CARB_AFR
+			int16_t int_m_thrd = AFRVAL_MAG(14.7) - AFRVAL_MAG(0.05);
+			int16_t int_p_thrd = AFRVAL_MAG(14.7) + AFRVAL_MAG(0.05);
+		#endif
 
-  if (d.sens.afr[inp] < int_m_thrd)
-  {
-   if (1!=mask)
-   {
-    d.corr.lambda[inp]-=d.param.inj_lambda_step_size_m;
-    updated = 1;
-#ifdef FUEL_INJECT
-    //update switch counter
-    if (1 == ego.last_sign[inp])
-     ++ego.swt_counter[inp];
-    ego.last_sign[inp] = 0;
-#endif
-   }
-  }
-  else if (d.sens.afr[inp] > int_p_thrd)
-  {
-   if (2!=mask)
-   {
-    d.corr.lambda[inp]+=d.param.inj_lambda_step_size_p;
-    updated = 2;
-#ifdef FUEL_INJECT
-    //update switch counter
-    if (0 == ego.last_sign[inp])
-     ++ego.swt_counter[inp];
-    ego.last_sign[inp] = 1;
-#endif
-   }
-  }
- }
-////////////////////////////////////////////////////////////////////////////////////////
+		if (int_m_thrd < 0) {int_m_thrd = 0;}
 
-#ifdef GD_CONTROL
- //Use special limits when (gas doser is active) AND ((choke control used AND choke not fully opened) OR (choke control isn't used AND engine is not heated))
- if (d.sens.gas && IOCFG_CHECK(IOP_GD_STP) && ((IOCFG_CHECK(IOP_SM_STP) && (d.choke_pos > 0)) || (!IOCFG_CHECK(IOP_SM_STP) && d.sens.temperat <= d.param.idlreg_turn_on_temp)))
-  restrict_value_to(&d.corr.lambda[inp], -d.param.gd_lambda_corr_limit_m, d.param.gd_lambda_corr_limit_p);
- else
-  restrict_value_to(&d.corr.lambda[inp], -d.param.inj_lambda_corr_limit_m, d.param.inj_lambda_corr_limit_p);
-#else
- restrict_value_to(&d.corr.lambda[inp], -d.param.inj_lambda_corr_limit_m, d.param.inj_lambda_corr_limit_p);
-#endif
- return updated;
+		if (d.sens.afr[inp] < int_m_thrd) {
+			if (1 != mask) {
+				d.corr.lambda[inp] -= d.param.inj_lambda_step_size_m;
+				updated = 1;
+				#ifdef FUEL_INJECT
+					//update switch counter
+					if (1 == ego.last_sign[inp]) {
+						++ego.swt_counter[inp];
+					}
+					ego.last_sign[inp] = 0;
+				#endif
+			}
+		}
+		else if (d.sens.afr[inp] > int_p_thrd) {
+			if (2 != mask) {
+				d.corr.lambda[inp] += d.param.inj_lambda_step_size_p;
+				updated = 2;
+				#ifdef FUEL_INJECT
+					//update switch counter
+					if (0 == ego.last_sign[inp]) {
+						++ego.swt_counter[inp];
+					}
+					ego.last_sign[inp] = 1;
+				#endif
+			}
+		}
+	}
+	////////////////////////////////////////////////////////////////////////////////////////
+
+	#ifdef GD_CONTROL
+		//Use special limits when (gas doser is active) AND ((choke control used AND choke not fully opened) OR (choke control isn't used AND engine is not heated))
+		if (d.sens.gas && IOCFG_CHECK(IOP_GD_STP) && ((IOCFG_CHECK(IOP_SM_STP) && (d.choke_pos > 0)) || (!IOCFG_CHECK(IOP_SM_STP) && d.sens.temperat <= d.param.idlreg_turn_on_temp))) {
+			restrict_value_to(&d.corr.lambda[inp], -d.param.gd_lambda_corr_limit_m, d.param.gd_lambda_corr_limit_p);
+		}
+		else {
+			restrict_value_to(&d.corr.lambda[inp], -d.param.inj_lambda_corr_limit_m, d.param.inj_lambda_corr_limit_p);
+		}
+	#else
+		restrict_value_to(&d.corr.lambda[inp], -d.param.inj_lambda_corr_limit_m, d.param.inj_lambda_corr_limit_p);
+	#endif
+
+	return updated;
 }
 
 #if defined(FUEL_INJECT) || defined(GD_CONTROL)
-int16_t lambda_get_stoichval(void)
-{
- return (d.sens.gas ? d.param.gd_lambda_stoichval : AFRVAL_MAG(14.7));
-}
+	int16_t lambda_get_stoichval(void) {
+		return (d.sens.gas ? d.param.gd_lambda_stoichval : AFRVAL_MAG(14.7));
+	}
 #endif
 
-void lambda_stroke_event_notification(void)
-{
- uint8_t chnum = CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 1 : 2; //skip processing 2nd sensor if mixing is selected
- for(uint8_t i = 0; i < chnum; ++i)
- {
-  if (1==chnum)
-  { //two sensors are blended into sensor #1
-   d.corr.lambda[1] = 0;
-   if (!IOCFG_CHECK(IOP_LAMBDA) && !IOCFG_CHECK(IOP_LAMBDA2))
-    continue;
-  }
-  else
-  {
-   if (!IOCFG_CHECK(i ? IOP_LAMBDA2 : IOP_LAMBDA))
-   {
-    d.corr.lambda[i] = 0;
-    continue; //EGO is not enabled (input was not remapped)
-   }
-  }
+void lambda_stroke_event_notification(void) {
+	//skip processing 2nd sensor if mixing is selected
+	uint8_t chnum = CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 1 : 2;
+	for (uint8_t i = 0; i < chnum; ++i) {
+		if (1 == chnum) { //two sensors are blended into sensor #1
+			d.corr.lambda[1] = 0;
+			if (!IOCFG_CHECK(IOP_LAMBDA) && !IOCFG_CHECK(IOP_LAMBDA2)) {
+				continue;
+			}
+		}
+		else {
+			if (!IOCFG_CHECK(i ? IOP_LAMBDA2 : IOP_LAMBDA)) {
+				d.corr.lambda[i] = 0;
+				continue; //EGO is not enabled (input was not remapped)
+			}
+		}
 
-  if (0x00==d.param.lambda_selch && 1 == i)
-  {
-   d.corr.lambda[1] = 0;
-   continue; //skip processing 2nd correction if 2nd sensor is not selected for any cylinder
-  }
+		if (0x00 == d.param.lambda_selch && 1 == i) {
+			d.corr.lambda[1] = 0;
+			continue; //skip processing 2nd correction if 2nd sensor is not selected for any cylinder
+		}
 
-  if (0xFF==d.param.lambda_selch && 0 == i && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))
-  {
-   d.corr.lambda[0] = 0;
-   continue; //skip processing 1st correction if 1st sensor is not selected for any cylinder
-  }
+		if (0xFF==d.param.lambda_selch && 0 == i && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))	{
+			d.corr.lambda[0] = 0;
+			continue; //skip processing 1st correction if 1st sensor is not selected for any cylinder
+		}
 
-  if (!ego.enabled[i])
-   continue; //wait some time before oxygen sensor will be turned on
+		if (!ego.enabled[i]) {
+			continue; //wait some time before oxygen sensor will be turned on
+		}
 
-  //do not process EGO correction if it is not needed (gas equipment on the carburetor)
-#if !defined(FUEL_INJECT) && !defined(CARB_AFR)
-  if (!d.sens.gas || !IOCFG_CHECK(IOP_GD_STP))
-  {
-   d.corr.lambda[i] = 0;
-   continue;
-  }
-#endif
+		//do not process EGO correction if it is not needed (gas equipment on the carburetor)
+		#if !defined(FUEL_INJECT) && !defined(CARB_AFR)
+			if (!d.sens.gas || !IOCFG_CHECK(IOP_GD_STP)) {
+				d.corr.lambda[i] = 0;
+				continue;
+			}
+		#endif
 
- //used only with fuel injection or gas doser
-#if defined(FUEL_INJECT) || defined(GD_CONTROL)
+		//used only with fuel injection or gas doser
+		#if defined(FUEL_INJECT) || defined(GD_CONTROL)
 
-#if !defined(FUEL_INJECT) && defined(GD_CONTROL)
-  if ((d.sens.gas && IOCFG_CHECK(IOP_GD_STP))) {
-#endif
+			#if !defined(FUEL_INJECT) && defined(GD_CONTROL)
+				if ((d.sens.gas && IOCFG_CHECK(IOP_GD_STP))) {
+			#endif
 
-   // Время задержки при обогащении вынеc отдельно
-   if (d.acceleration)
-   {
-      ego.fc_delay[i] = EGO_AC_DELAY;
-      d.corr.lambda[i] = 0;
-      continue;
-   }
-   //Turn off EGO correction on overrun or rev. limiting or on idling (if enabled)
-   if (!d.ie_valve || d.fc_revlim || (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR)))
-   { //overrun or rev.limiting
-    ego.fc_delay[i] = EGO_FC_DELAY;
-    d.corr.lambda[i] = 0;
-    continue;
-   }
+			//Turn off EGO correction on overrun or rev. limiting or on idling (if enabled)
+			// Время задержки при обогащении вынеc отдельно
+			if (d.acceleration && ego.fc_delay[i] < EGO_AC_DELAY)
+			{
+				ego.fc_delay[i] = EGO_AC_DELAY;
+				d.corr.lambda[i] = 0;
+				continue;
+			}
+			//overrun or rev.limiting
+			if (!d.ie_valve || d.fc_revlim || (!d.sens.carb && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_IDLCORR))) {
+				ego.fc_delay[i] = EGO_FC_DELAY;
+				d.corr.lambda[i] = 0;
+				continue;
+			}
+			else {
+				if (ego.fc_delay[i]) {
+					--ego.fc_delay[i];
+					d.corr.lambda[i] = 0;
+					continue;  //continue count delay
+				}
+			}
 
-   else
-   {
-    if (ego.fc_delay[i])
-    {
-      --ego.fc_delay[i];
-     d.corr.lambda[i] = 0;
-     continue;  //continue count delay
-    }
-   }
+			#if !defined(FUEL_INJECT) && defined(GD_CONTROL)
+				}
+			#endif
 
-#if !defined(FUEL_INJECT) && defined(GD_CONTROL)
-  }
-#endif
+			//used only by fuel injection and gas doser
+			if (d.param.inj_lambda_senstype == 0) { //NBO sensor type
+				int16_t afrerr = abs(d.corr.afr - lambda_get_stoichval());
 
-  //used only by fuel injection and gas doser
-  if (d.param.inj_lambda_senstype==0)
-  { //NBO sensor type
-   int16_t afrerr = abs(d.corr.afr - lambda_get_stoichval());
+				//EGO allowed only when AFR=14.7 for petrol, and 15.6 for LPG
+				if (afrerr > AFRVAL_MAG(0.05)) {
+					d.corr.lambda[i] = 0;
+					continue; //not a stoichiometry AFR
+				}
+			}
+			else { //WBO sensor type or emulation
+				if ((d.corr.afr < ego_curve_min()) || (d.corr.afr > ego_curve_max())) {
+					d.corr.lambda[i] = 0;
+					continue; //out of range
+				}
+			}
 
-   if (afrerr > AFRVAL_MAG(0.05)) //EGO allowed only when AFR=14.7 for petrol, and 15.6 for LPG
-   {
-    d.corr.lambda[i] = 0;
-    continue; //not a stoichiometry AFR
-   }
-  }
-  else
-  { //WBO sensor type or emulation
-   if ((d.corr.afr < ego_curve_min()) || (d.corr.afr > ego_curve_max()))
-   {
-    d.corr.lambda[i] = 0;
-    continue; //out of range
-   }
-  }
+			//Reset EGO correction if work point is out of set zone
+			if (!lambda_zone_val()) {
+				d.corr.lambda[i] = 0;
+				continue; //not allowed for this (RPM,load)
+			}
 
-  //Reset EGO correction if work point is out of set zone
-  if (!lambda_zone_val())
-  {
-   d.corr.lambda[i] = 0;
-   continue; //not allowed for this (RPM,load)
-  }
+		#endif // FUEL_INJECT || GD_CONTROL
 
-#endif // FUEL_INJECT || GD_CONTROL
+		//Reset EGO correction each time fuel type(set of maps) is changed (triggering of level on the GAS_V input)
+		if (ego.gasv_prev[i] != d.sens.gas) {
+			d.corr.lambda[i] = 0;
+			ego.gasv_prev[i] = d.sens.gas;
+			continue; //exit from this iteration
+		}
 
-  //Reset EGO correction each time fuel type(set of maps) is changed (triggering of level on the GAS_V input)
-  if (ego.gasv_prev[i] != d.sens.gas)
-  {
-   d.corr.lambda[i] = 0;
-   ego.gasv_prev[i] = d.sens.gas;
-   continue; //exit from this iteration
-  }
-
-  if ((d.sens.inst_frq > d.param.inj_lambda_rpm_thrd) && (d.sens.temperat > d.param.inj_lambda_temp_thrd))    //RPM > threshold && coolant temperature > threshold
-  {
-   if (d.param.inj_lambda_str_per_stp > 0)
-   {//using strokes
-    if (ego.stroke_counter[i])
-     ego.stroke_counter[i]--;
-    else
-    {
-     ego.stroke_counter[i] = d.param.inj_lambda_str_per_stp;
-     lambda_iteration(0, i);
-    }
-   }
-   else
-   { //using ms
-    uint8_t updated = lambda_iteration(ego.ms_mask[i], i);
-    if (updated)
-    {
-     ego.lambda_t2[i] = s_timer_gtc();
-     ego.ms_mask[i] = updated;
-    }
-    else
-    {
-     if ((s_timer_gtc() - ego.lambda_t2[i]) >= (d.param.inj_lambda_ms_per_stp))
-      ego.ms_mask[i] = 0;
-    }
-   }
-  }
-  else
-   d.corr.lambda[i] = 0;
- }
+		//RPM > threshold && coolant temperature > threshold
+		if ((d.sens.inst_frq > d.param.inj_lambda_rpm_thrd) && (d.sens.temperat > d.param.inj_lambda_temp_thrd)) {
+			if (d.param.inj_lambda_str_per_stp > 0) { //using strokes
+				if (ego.stroke_counter[i]) {
+					ego.stroke_counter[i]--;
+				}
+				else {
+					ego.stroke_counter[i] = d.param.inj_lambda_str_per_stp;
+					lambda_iteration(0, i);
+				}
+			}
+			else { //using ms
+				uint8_t updated = lambda_iteration(ego.ms_mask[i], i);
+				if (updated) {
+					ego.lambda_t2[i] = s_timer_gtc();
+					ego.ms_mask[i] = updated;
+				}
+				else {
+					if ((s_timer_gtc() - ego.lambda_t2[i]) >= (d.param.inj_lambda_ms_per_stp)) {
+						ego.ms_mask[i] = 0;
+					}
+				}
+			}
+		}
+		else {
+			d.corr.lambda[i] = 0;
+		}
+	}
 }
 
-uint8_t lambda_is_activated(uint8_t inp)
-{
- if (inp < 2)
- {
-  return ego.enabled[inp];
- }
- else
- {
-  if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))
-   return ego.enabled[0]; //already mixed at sensor level
-  if (IOCFG_CHECK(IOP_LAMBDA) && IOCFG_CHECK(IOP_LAMBDA2))
-   return ego.enabled[0] && ego.enabled[1];
-  else if (IOCFG_CHECK(IOP_LAMBDA2))
-   return ego.enabled[1];
-  else
-   return ego.enabled[0];
- }
+uint8_t lambda_is_activated(uint8_t inp) {
+	if (inp < 2) {
+		return ego.enabled[inp];
+	}
+	else {
+		if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN)) {
+			return ego.enabled[0]; //already mixed at sensor level
+		}
+		if (IOCFG_CHECK(IOP_LAMBDA) && IOCFG_CHECK(IOP_LAMBDA2)) {
+			return ego.enabled[0] && ego.enabled[1];
+		}
+		else if (IOCFG_CHECK(IOP_LAMBDA2)) {
+			return ego.enabled[1];
+		}
+		else {
+			return ego.enabled[0];
+		}
+	}
 }
 
-void lambda_eng_stopped_notification(void)
-{
- d.corr.lambda[0] = 0;
- d.corr.lambda[1] = 0;
+void lambda_eng_stopped_notification(void) {
+	d.corr.lambda[0] = 0;
+	d.corr.lambda[1] = 0;
 }
 
 #ifdef FUEL_INJECT
-void lambda_reset_swt_counter(uint8_t inp)
-{
- ego.swt_counter[inp] = 0;
-}
+	void lambda_reset_swt_counter(uint8_t inp) {
+		ego.swt_counter[inp] = 0;
+	}
 
-uint8_t lambda_get_swt_counter(uint8_t inp)
-{
- return ego.swt_counter[inp];
-}
+	uint8_t lambda_get_swt_counter(uint8_t inp) {
+		return ego.swt_counter[inp];
+	}
 #endif
 
 #if defined(CARB_AFR) || defined(GD_CONTROL)
-int16_t lambda_get_mixcor(void)
-{
- if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN))
-  return d.corr.lambda[0]; //already mixed at sensor level
- if (IOCFG_CHECK(IOP_LAMBDA) && IOCFG_CHECK(IOP_LAMBDA2))
-  return (d.corr.lambda[0] + d.corr.lambda[1]) / 2;
- else if (IOCFG_CHECK(IOP_LAMBDA2))
-  return d.corr.lambda[1];
- else
-  return d.corr.lambda[0];
-}
+	int16_t lambda_get_mixcor(void) {
+		if (CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN)) {
+			return d.corr.lambda[0]; //already mixed at sensor level
+		}
+		if (IOCFG_CHECK(IOP_LAMBDA) && IOCFG_CHECK(IOP_LAMBDA2)) {
+			return (d.corr.lambda[0] + d.corr.lambda[1]) / 2;
+		}
+		else if (IOCFG_CHECK(IOP_LAMBDA2)) {
+			return d.corr.lambda[1];
+		}
+		else {
+			return d.corr.lambda[0];
+		}
+	}
 #endif
 
 #endif
