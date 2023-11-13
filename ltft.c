@@ -37,8 +37,6 @@
 #include "mathemat.h"
 #include "bitmask.h"
 
-// Режим отладки
-//#define DEBUG_MODE
 // Размер буфера
 #define KOSH_CBS 40
 
@@ -110,54 +108,29 @@ Kosh_t Kosh = {
 
 // Расчет коррекции 
 void kosh_ltft_control(uint8_t Channel) {
-	#ifdef DEBUG_MODE
-		// Обороты, давление и лямбда коррекция
-		// для отладки будут браться из VE
-		// Обороты VE * 2
-		Kosh.RPM = _GWU12(inj_ve2, 14, 0) << 1;
-		// Давление VE * 4
-		Kosh.MAP = _GWU12(inj_ve2, 14, 1) << 2;
-		// Лямбда коррекция
-		d.corr.lambda[Channel] = (_GWU12(inj_ve2, 14, 2) >> 4) - 128;
+	// Уходим, пока не накопится коррекция
+	if (d.corr.lambda[Channel] > -3 && d.corr.lambda[Channel] < 3) {return;}
 
-		d.inj_ltft1[2 + Channel][15] = 51;
-	#else
-		// Уходим, пока не накопится коррекция
-		if (d.corr.lambda[Channel] > -3 && d.corr.lambda[Channel] < 3) {return;}
+	// Верхний порог по температуре на впуске 42 градуса x4
+	if (d.sens.air_temp > 168) {return;}
 
-		// Находим целевые обороты и давления с учетом задержки
-		kosh_rpm_map_calc();
-	#endif
+	// Находим целевые обороты и давления с учетом задержки
+	kosh_rpm_map_calc();
 
 	// Пороги по оборотам и давлению (в основном для ХХ)
-	//if (Kosh.RPM < 1100 && Kosh.MAP < 35) {return;}
+	if (Kosh.RPM < 500 || Kosh.RPM > 6000) {return;}
+	if (Kosh.MAP < 10 * 64 || Kosh.MAP > 180 * 64) {return;}
+
+	// Коэффициент выравнивания x64
+	Kosh.Kf = 26;
 
 	// Флаг использовать сетку давления
 	Kosh.UseGrid = CHECKBIT(d.param.func_flags, FUNC_LDAX_GRID);
 	if (!Kosh.UseGrid) {Kosh.StepMAP = (d.param.load_upper - d.param.load_lower) / 15;}
 
-	// Коэффициент выравнивания x64
-	Kosh.Kf = 26;
-
 	// Поиск задействованных ячеек в расчете
 	kosh_find_cells();
 
-	#ifdef DEBUG_MODE
-		// Обнуление LTFT в рабочих ячейках
-		if (Channel) {
-			d.inj_ltft2[Kosh.y1][Kosh.x1] = 0;
-			d.inj_ltft2[Kosh.y2][Kosh.x1] = 0;
-			d.inj_ltft2[Kosh.y2][Kosh.x2] = 0;
-			d.inj_ltft2[Kosh.y1][Kosh.x2] = 0;
-		}
-		else {
-			d.inj_ltft1[Kosh.y1][Kosh.x1] = 0;
-			d.inj_ltft1[Kosh.y2][Kosh.x1] = 0;
-			d.inj_ltft1[Kosh.y2][Kosh.x2] = 0;
-			d.inj_ltft1[Kosh.y1][Kosh.x2] = 0;
-		}
-	#endif
-	
 	// Извлечение значений из таблицы VE.
 	// Умножаем значение на 8 для большей точности.
 	// VE = VE1 (default)
@@ -247,26 +220,7 @@ void kosh_ltft_control(uint8_t Channel) {
 	// Расчет добавочного коэффициента LTFT
 	for (uint8_t i = 0; i < 4; ++i) {
 		Kosh.LTFTAdd[i] = (int32_t) (Kosh.VEAlignment[i] + Kosh.AddVE[i]) * 512 / Kosh.StartVE[i];
-
-		// Вывод для отладки
-		#ifdef DEBUG_MODE
-			if (Channel) {d.inj_ltft2[13][i] = Kosh.LTFTAdd[i];}
-			else {d.inj_ltft1[13][i] = Kosh.LTFTAdd[i];}
-		#endif
 	}
-
-	// Так как я не могу выявить баг в вычислениях, буду просто проверять результат.
-	// Добавка должна быть в туже сторону, что и лямбда коррекция
-	// и не превышать более чем в 2 раза.
-	// Обнаруженные кривые значения будут записываться в вторую таблицу LTFT,
-	// чтобы потом можно было проанализировать.
-	// uint8_t TestResult = 0;
-	// TestResult += kosh_test_value(Kosh.y1, Kosh.x1, 0, Channel);
-	// TestResult += kosh_test_value(Kosh.y2, Kosh.x1, 1, Channel);
-	// TestResult += kosh_test_value(Kosh.y2, Kosh.x2, 2, Channel);
-	// TestResult += kosh_test_value(Kosh.y1, Kosh.x2, 3, Channel);
-
-	// if (TestResult > 0) {return;}
 
 	// Запись значений в таблицу LTFT
 	kosh_write_value(Kosh.y1, Kosh.x1, 0, Channel);
@@ -276,59 +230,6 @@ void kosh_ltft_control(uint8_t Channel) {
 
 	// Обнуление лямбда коррекции
 	d.corr.lambda[Channel] = 0;
-
-	// Вывод для отладки
-	#ifdef DEBUG_MODE
-		if (Channel) {
-			for (uint8_t i = 0; i < 4; ++i) {
-				d.inj_ltft2[15][i] = Kosh.VEAlignment[i] / 32;
-				d.inj_ltft2[14][i] = Kosh.AddVE[i] / 32;
-				d.inj_ltft2[12][i] = Kosh.LTFTAdd[i];
-				d.inj_ltft2[11][i] = ((int32_t) Kosh.CellsProp[i] * 512 / 10) >> 11;
-			}
-			d.inj_ltft2[15][6] = (float) Kosh.CalcVE * 0.003125;
-			d.inj_ltft2[14][6] = (float) Kosh.TargetVe * 0.003125;
-		}
-		else {
-			for (uint8_t i = 0; i < 4; ++i) {
-				d.inj_ltft1[15][i] = Kosh.VEAlignment[i] / 32;
-				d.inj_ltft1[14][i] = Kosh.AddVE[i] / 32;
-				d.inj_ltft1[12][i] = Kosh.LTFTAdd[i];
-				d.inj_ltft1[11][i] = ((int32_t) Kosh.CellsProp[i] * 512 / 10) >> 11;
-			}
-			d.inj_ltft1[15][6] = (float) Kosh.CalcVE * 0.003125;
-			d.inj_ltft1[14][6] = (float) Kosh.TargetVe * 0.003125;
-		}
-	#endif
-}
-
-// Проверка значения перед записью
-uint8_t kosh_test_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
-	// Ограничение значения коррекции
-	int8_t Value = Channel ? d.inj_ltft2[y][x] : d.inj_ltft1[y][x];
-	int8_t Min = PGM_GET_BYTE(&fw_data.exdata.ltft_min);
-	int8_t Max = PGM_GET_BYTE(&fw_data.exdata.ltft_max);
-
-	if (Value + Kosh.LTFTAdd[n] > Max) {Kosh.LTFTAdd[n] = Max - Value;}
-	else if (Value + Kosh.LTFTAdd[n] < Min) {Kosh.LTFTAdd[n] = Min - Value;}
-
-	// Проверка значений на корректность
-	if (Kosh.LTFTAdd[n] < 0 && d.corr.lambda[Channel] > 0) {
-		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
-		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
-		return 0;
-	}
-	if (Kosh.LTFTAdd[n] > 0 && d.corr.lambda[Channel] < 0) {
-		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
-		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
-		return 0;
-	}
-	if (abs(Kosh.LTFTAdd[n]) > (abs(d.corr.lambda[Channel]) * 2)) {
-		d.inj_ltft2[y][x] = Kosh.LTFTAdd[n];
-		if (y < 15) {d.inj_ltft2[y + 1][x] = d.corr.lambda[Channel];}
-		return 0;
-	}
-	return 0;
 }
 
 void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel) {
@@ -523,15 +424,6 @@ void kosh_circular_buffer_update(void) {
 // =============================================================================
 
 void ltft_control(void) {
-	#ifdef DEBUG_MODE
-		uint8_t chnum = (0x00 != d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
-		uint8_t chbeg = (0xFF == d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
-		for (uint8_t i = chbeg; i < chnum; ++i) {
-			// Переход к моей функции
-			kosh_ltft_control(i);
-		}
-	#endif
-
 	// Условия выхода из функции:
 	// 1 - Идет процесс записи в EEPROM
 	uint8_t ee_opcode = eeprom_get_pending_opcode();
@@ -553,10 +445,8 @@ void ltft_control(void) {
 	// 7 - Адаптация выключена на ХХ
 	if (!d.sens.carb && !PGM_GET_BYTE(&fw_data.exdata.ltft_on_idling)) {return;}
 
-	#ifndef DEBUG_MODE
-		uint8_t chnum = (0x00 != d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
-		uint8_t chbeg = (0xFF == d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
-	#endif
+	uint8_t chnum = (0x00 != d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN) ? 2 : 1;
+	uint8_t chbeg = (0xFF == d.param.lambda_selch) && !CHECKBIT(d.param.inj_lambda_flags, LAMFLG_MIXSEN);
 
 	for (uint8_t i = chbeg; i < chnum; ++i) {
 		// Переход к моей функции

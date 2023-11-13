@@ -35,7 +35,6 @@
 
 		// ====================================================
 		void kosh_ltft_control(uint8_t Channel);
-		uint8_t kosh_test_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel);
 		void kosh_write_value(uint8_t y, uint8_t x, uint8_t n, uint8_t Channel);
 		void kosh_find_cells(void);
 		void kosh_points_weight(void);
