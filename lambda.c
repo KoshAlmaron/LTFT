@@ -242,9 +242,15 @@ void lambda_stroke_event_notification(void) {
 			#endif
 
 			//Turn off EGO correction on overrun or rev. limiting or on idling (if enabled)
+			// Отключение коррекции при нерабочем ШДК.
+			// Рабочий диапазон AFR 10.0 - 17.0 (x128).
+			if (d.param.inj_lambda_senstype == 1 && (d.sens.afr[i] < 1280 || d.sens.afr[i] > 2176)) {
+				ego.fc_delay[i] = EGO_FC_DELAY;
+				d.corr.lambda[i] = 0;
+				continue;
+			}
 			// Время задержки при обогащении вынеc отдельно
-			if (d.acceleration && ego.fc_delay[i] < EGO_AC_DELAY)
-			{
+			if (d.acceleration && ego.fc_delay[i] < EGO_AC_DELAY) {
 				ego.fc_delay[i] = EGO_AC_DELAY;
 				d.corr.lambda[i] = 0;
 				continue;
@@ -255,12 +261,11 @@ void lambda_stroke_event_notification(void) {
 				d.corr.lambda[i] = 0;
 				continue;
 			}
-			else {
-				if (ego.fc_delay[i]) {
-					--ego.fc_delay[i];
-					d.corr.lambda[i] = 0;
-					continue;  //continue count delay
-				}
+			// Отматываем счетчик
+			if (ego.fc_delay[i]) {
+				--ego.fc_delay[i];
+				d.corr.lambda[i] = 0;
+				continue;  //continue count delay
 			}
 
 			#if !defined(FUEL_INJECT) && defined(GD_CONTROL)
